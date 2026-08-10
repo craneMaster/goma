@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>五麻 · 5-Player Mahjong</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=DM+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css?v=48" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="header">
+        <h1>五麻</h1>
+        <p class="tagline">5 players · 5 copies per tile · 花 as fifth wind</p>
+      </header>
+
+      <section id="lobby" class="panel lobby">
+        <h2>Join table</h2>
+        <form id="join-form">
+          <label>
+            Your name
+            <input type="text" id="player-name" maxlength="16" placeholder="Player" required />
+          </label>
+          <label>
+            Room code
+            <input type="text" id="room-code" maxlength="8" placeholder="TABLE" />
+          </label>
+          <button type="submit" class="btn primary">Enter room</button>
+        </form>
+        <p id="join-error" class="error" hidden></p>
+      </section>
+
+      <section id="game" class="game" hidden>
+        <div class="hud">
+          <div class="hud-center">
+            <p id="status-message" class="status-message"></p>
+            <!-- Host-only controls: in HUD so they always show above the table -->
+            <div id="host-start-panel" class="host-start-panel" hidden>
+              <p class="host-start-title">Host · Game setup</p>
+              <div class="host-start-row">
+                <label class="game-length-label" for="game-length">
+                  Game length
+                  <select id="game-length" class="game-length-select">
+                    <option value="east">East only</option>
+                    <option value="south" selected>East–South</option>
+                    <option value="west">East–West</option>
+                    <option value="north">East–North (full)</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  id="btn-start"
+                  class="btn primary"
+                  onclick="window.__startGame && window.__startGame(event)"
+                >
+                  Start game
+                </button>
+              </div>
+              <p id="host-start-hint" class="host-start-hint"></p>
+            </div>
+            <div id="lobby-roster" class="lobby-roster" hidden>
+              <p class="lobby-roster-title">Players</p>
+              <ul id="lobby-roster-list" class="lobby-roster-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="game-board">
+          <div id="table" class="table" aria-label="Mahjong table">
+            <div id="table-center" class="seat-center table-center" aria-label="Wall and pot">
+              <div class="table-stats">
+                <div class="stat-row wall-count">
+                  <span class="stat-label">Live</span>
+                  <strong id="wall-count">0</strong>
+                </div>
+                <div class="stat-row rinshan-count" id="rinshan-count" hidden>
+                  <span class="stat-label">Dead</span>
+                  <strong>0</strong>
+                </div>
+                <div class="stat-row riichi-pot" id="riichi-pot" hidden>
+                  <span class="stat-label">Pot</span>
+                  <strong>0</strong>
+                </div>
+              </div>
+              <div id="table-center-meta" class="table-center-meta"></div>
+            </div>
+            <!-- Opponent seats rendered by JS -->
+            <div class="seat seat-bottom" aria-label="Your tiles on the table">
+              <div class="seat-inner">
+                <div class="seat-tiles">
+                  <div class="seat-river-cluster">
+                    <div id="your-seat-header" class="seat-header" aria-label="Your seat"></div>
+                    <div class="riichi-stick" hidden aria-hidden="true">
+                      <img src="/calls/riichi_stick.png" alt="Riichi stick" />
+                    </div>
+                    <div id="your-discards" class="discard-row yours-discards"></div>
+                  </div>
+                  <div class="seat-edge-cluster">
+                    <div id="your-melds" class="melds-row" aria-label="Your melds"></div>
+                    <div id="your-hand" class="hand" role="list" aria-label="Your hand"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="info-dock" aria-label="Seat info and indicators">
+            <div class="seat-title">
+              <span class="room-badge">Room <strong id="display-code"></strong></span>
+              <span id="seat-label" class="seat-label"></span>
+            </div>
+            <div id="game-length-locked" class="game-length-locked" hidden>
+              <span class="game-length-label">Game length</span>
+              <strong id="game-length-locked-value"></strong>
+            </div>
+            <div
+              id="indicators-bar"
+              class="indicators-bar"
+              hidden
+              aria-label="Dora indicators"
+            >
+              <span class="indicators-label">Indicators</span>
+              <div id="dora-indicators" class="dora-row"></div>
+              <div id="ura-indicators" class="dora-row ura-row" hidden>
+                <span class="indicators-label ura-label">Ura</span>
+                <div id="ura-indicator-tiles" class="dora-row"></div>
+              </div>
+            </div>
+          </aside>
+
+          <div class="calls-dock" aria-label="Tile calls">
+            <div id="claim-panel" class="claim-panel" hidden>
+              <p class="claim-title">Claim on discard</p>
+              <div id="claim-buttons" class="claim-buttons"></div>
+              <button type="button" id="btn-pass" class="btn ghost">Pass</button>
+            </div>
+            <div id="self-meld-panel" class="self-meld-panel" hidden>
+              <p class="claim-title">Closed melds</p>
+              <div id="self-meld-buttons" class="claim-buttons"></div>
+            </div>
+            <div id="abort-nine-panel" class="abort-nine-panel" hidden>
+              <p class="claim-title">Abortive draw</p>
+              <button type="button" id="btn-abort-nine" class="btn abort-nine">
+                Draw
+              </button>
+            </div>
+            <div id="riichi-panel" class="riichi-panel" hidden>
+              <button type="button" id="btn-riichi" class="btn riichi" hidden>Riichi 立直</button>
+              <button type="button" id="btn-undo-riichi" class="btn undo-riichi" hidden>Undo riichi</button>
+            </div>
+            <div id="tsumo-panel" class="tsumo-panel" hidden>
+              <button type="button" id="btn-win" class="btn win" hidden>Tsumo</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="round-end-panel" class="round-end-panel" hidden>
+          <h2 id="round-end-title" class="round-end-title">Round over</h2>
+          <p id="round-end-dealer-note" class="round-end-dealer-note"></p>
+          <div id="rematch-setup" class="rematch-setup" hidden>
+            <p class="rematch-setup-title">Host · New game</p>
+            <div class="rematch-setup-row">
+              <label class="game-length-label" for="rematch-game-length">
+                Game length
+                <select id="rematch-game-length" class="game-length-select">
+                  <option value="east">East only</option>
+                  <option value="south" selected>East–South</option>
+                  <option value="west">East–West</option>
+                  <option value="north">East–North (full)</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                id="btn-rematch-start"
+                class="btn primary"
+                onclick="window.__startGame && window.__startGame(event)"
+              >
+                New game
+              </button>
+            </div>
+            <p id="rematch-setup-hint" class="rematch-setup-hint"></p>
+          </div>
+          <div id="round-end-standings" class="round-end-standings" hidden></div>
+          <div id="round-end-hands" class="round-end-hands"></div>
+        </div>
+
+        <div class="your-area">
+          <div class="actions">
+            <button
+              type="button"
+              id="btn-start-actions"
+              class="btn primary"
+              hidden
+              onclick="window.__startGame && window.__startGame(event)"
+            >
+              Start game
+            </button>
+            <button type="button" id="btn-next-round" class="btn primary" hidden>Next round</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="app.js?v=46"></script>
+  </body>
+</html>

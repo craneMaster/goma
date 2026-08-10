@@ -1,0 +1,14 @@
+{
+  "name": "mahjong-5p",
+  "version": "1.0.0",
+  "description": "Online 5-player mahjong — draw and discard with 5 copies per tile; 花 is the fifth wind",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "socket.io": "^4.7.5"
+  }
+}

@@ -1,0 +1,2594 @@
+:root {
+  --bg: #0f1419;
+  --felt: #1a3d32;
+  --felt-light: #245244;
+  --panel: #1c242e;
+  --border: #2e3d4d;
+  --text: #e8edf2;
+  --muted: #8b9aab;
+  --accent: #e8a838;
+  --accent-dim: #b8842a;
+  --danger: #e85d5d;
+  --tile-face: #f4efe6;
+  --tile-edge: #c9bfb0;
+  --flower: #9b6bb8;
+  --turn-glow: #5ec4a0;
+  /* CCW tile facing toward table center; bottom player = 0deg (upright) */
+  --rotate-bottom: 0deg;
+  --rotate-lr: -72deg;
+  --rotate-ur: -144deg;
+  --rotate-ul: -216deg;
+  --rotate-ll: -288deg;
+  /* Regular pentagon, flat bottom (bbox aspect ≈ 1.0515). Vertices from circumcircle. */
+  --pentagon: polygon(
+    50% 0%,
+    100% 38.1966%,
+    80.9017% 100%,
+    19.0983% 100%,
+    0% 38.1966%
+  );
+  --pentagon-ratio: 1.05146;
+  --table-scale: 1.5;
+  /* Discards / melds — enlarged now that rivers sit closer to center */
+  --tile-face-w: clamp(28px, 3.35vw, 40px);
+  --tile-face-h: clamp(38px, 4.5vw, 54px);
+  /* Hands: same on every seat — slightly under prior size to clear adjacent seats */
+  --hand-tile-w: clamp(35px, 4.15vw, 49px);
+  --hand-tile-h: clamp(48px, 5.6vw, 66px);
+  --tile-w: var(--hand-tile-w);
+  --tile-h: var(--hand-tile-h);
+  --tile-sm-w: var(--tile-face-w);
+  --tile-sm-h: var(--tile-face-h);
+  --tile-seat-w: var(--tile-face-w);
+  --tile-seat-h: var(--tile-face-h);
+  /* Melds: slightly larger than discards; flush within each group */
+  --meld-tile-w: clamp(31px, 3.7vw, 44px);
+  --meld-tile-h: clamp(42px, 5vw, 60px);
+  /* Opponent backs match hand size so all seats stay symmetric */
+  --tile-back-w: var(--hand-tile-w);
+  --tile-back-h: var(--hand-tile-h);
+  --discard-cols: 6;
+  --discard-gap: 2px;
+  /* Always reserve 3 river rows so a 3rd row never pushes the hand */
+  --discard-rows-reserved: 3;
+  --hand-gap: 1px;
+  /* Full 14-tile hand row (pre-scale) — same width budget on every seat */
+  --hand-row-w: calc(14 * var(--hand-tile-w) + 13 * var(--hand-gap));
+  /*
+   * Hands near the edge; rivers + points nudged toward center so tiles can grow.
+   * Shared scale / inset keep all five seats symmetric and inside the pentagon.
+   */
+  --seat-inset: 0.3;
+  --seat-scale: 0.66;
+  --discard-radius: 18%;
+  --discard-inward: 18%;
+  /* Local +Y nudge — hands stay near the boundary after seat rotation */
+  --hand-outward: 10%;
+  --seat-w: max(var(--hand-row-w), clamp(300px, 38%, 460px));
+  --seat-h: clamp(240px, 38%, 440px);
+  --seat-bottom-w: max(var(--hand-row-w), clamp(420px, 68%, 780px));
+  --font-ui: 'DM Sans', system-ui, sans-serif;
+  --font-tile: 'Noto Serif SC', serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-ui);
+  background: radial-gradient(ellipse at 50% 0%, #1a2830 0%, var(--bg) 55%);
+  color: var(--text);
+  overflow-x: auto;
+}
+
+#app {
+  max-width: 100%;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0.35rem 0.5rem 0.75rem;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: visible;
+  box-sizing: border-box;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 0.65rem;
+}
+
+.header h1 {
+  font-family: var(--font-tile);
+  font-size: 2.25rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.15em;
+}
+
+.tagline {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.panel h2 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.panel label {
+  display: block;
+  margin-bottom: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.panel input {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.85rem;
+  margin: 0.75rem 0 0;
+}
+
+.btn {
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.65rem 1.25rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.15s;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+.btn.primary {
+  background: var(--accent);
+  color: #1a1208;
+  width: 100%;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: #f0b84a;
+}
+
+.btn.accent {
+  background: var(--turn-glow);
+  color: #0a1a14;
+}
+
+.btn.accent:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn.win {
+  background: linear-gradient(135deg, #c41e3a, #9a1830);
+  color: #fff;
+}
+
+.btn.win:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn.riichi {
+  background: linear-gradient(135deg, #1e5fc4, #164a9a);
+  color: #fff;
+}
+
+.btn.riichi:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+#btn-abort-nine,
+.btn.abort-nine {
+  width: 100%;
+  border-color: rgba(232, 168, 56, 0.55);
+  color: #f0c14a;
+  background: transparent;
+}
+
+#btn-abort-nine:hover:not(:disabled),
+.btn.abort-nine:hover:not(:disabled) {
+  background: rgba(232, 168, 56, 0.15);
+}
+
+.btn.undo-riichi {
+  background: linear-gradient(135deg, #4a5568, #2d3748);
+  color: #edf2f7;
+}
+
+.btn.undo-riichi:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.seat-header .riichi-badge {
+  font-size: 0.7rem;
+  color: #6eb5ff;
+  font-weight: 700;
+  margin-left: 0.25rem;
+}
+
+.seat-header .riichi-badge:is([data-double], .double) {
+  color: #f0c14a;
+}
+
+.seat-header .furiten-badge {
+  font-size: 0.7rem;
+  color: #e85d5d;
+  font-weight: 700;
+  margin-left: 0.25rem;
+}
+
+.seat-header .points,
+.round-end-points {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-left: 0.25rem;
+}
+
+.point-delta {
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-left: 0.2rem;
+}
+
+.point-delta.plus {
+  color: #3ecf8e;
+}
+
+.point-delta.minus {
+  color: #e85d5d;
+}
+
+.seat-bottom.furiten .hand .tile {
+  box-shadow: 0 0 0 1px rgba(196, 30, 58, 0.45);
+}
+
+.seat-header .dealer-badge {
+  font-size: 0.7rem;
+  color: #f0b84a;
+  font-weight: 700;
+  margin-left: 0.25rem;
+}
+
+.seat-header .ready-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+}
+
+.seat-header .ready-badge.won {
+  background: rgba(196, 30, 58, 0.35);
+  color: #ffb3c0;
+}
+
+.seat-header .ready-badge.ready {
+  background: rgba(46, 160, 96, 0.3);
+  color: #8fe8b0;
+}
+
+.seat-header .ready-badge.not-ready {
+  background: rgba(120, 120, 120, 0.25);
+  color: var(--muted);
+}
+
+.game-round-end {
+  overflow: visible;
+}
+
+.game-round-end .game-board {
+  overflow: visible;
+}
+
+.game-round-end .table {
+  opacity: 0.92;
+  overflow: hidden;
+  min-height: 0;
+  max-height: calc(
+    min(78vh, calc((100vw - 1rem) / var(--pentagon-ratio))) * var(--table-scale)
+  );
+}
+
+.game-round-end .seat .discard-row {
+  max-height: none;
+  overflow: visible;
+}
+
+.game-round-end .your-area {
+  padding-top: 0.25rem;
+}
+
+.game-round-end .seat-lr .seat-inner {
+  transform: rotate(var(--rotate-lr)) scale(0.64);
+}
+
+.game-round-end .seat-ur .seat-inner {
+  transform: rotate(var(--rotate-ur)) scale(0.64);
+}
+
+.game-round-end .seat-ul .seat-inner {
+  transform: rotate(var(--rotate-ul)) scale(0.64);
+}
+
+.game-round-end .seat-ll .seat-inner {
+  transform: rotate(var(--rotate-ll)) scale(0.64);
+}
+
+.game-round-end .seat-bottom .seat-inner {
+  transform: rotate(var(--rotate-bottom)) scale(0.64);
+}
+
+.round-end-panel {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.round-end-title {
+  margin: 0 0 0.35rem;
+  font-family: 'Noto Serif SC', serif;
+  font-size: 1.15rem;
+}
+
+.round-end-dealer-note {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.rematch-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.85rem;
+  background: #14261f;
+  border: 2px solid var(--accent, #e8a838);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+.rematch-setup[hidden] {
+  display: none !important;
+}
+
+.rematch-setup-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent, #e8a838);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rematch-setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem 1rem;
+}
+
+.rematch-setup .game-length-label {
+  flex: 1 1 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.rematch-setup .game-length-select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  font-size: 1rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.rematch-setup .btn.primary {
+  flex: 0 0 auto;
+  min-width: 10rem;
+  font-size: 1.05rem;
+  padding: 0.6rem 1.1rem;
+}
+
+.rematch-setup .btn.primary.is-waiting {
+  opacity: 0.55;
+}
+
+.rematch-setup-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #c5d4c8;
+  line-height: 1.35;
+}
+
+.round-end-hands {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.round-end-standings {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  background: rgba(12, 22, 20, 0.72);
+  border: 1px solid rgba(232, 168, 56, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+
+.round-end-standings[hidden] {
+  display: none !important;
+}
+
+.round-end-standings-title {
+  margin: 0 0 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent, #e8a838);
+}
+
+.round-end-standings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.round-end-standing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid transparent;
+}
+
+.round-end-standing.is-you {
+  border-color: rgba(240, 184, 74, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(240, 184, 74, 0.2);
+}
+
+.round-end-standing.place-1 .round-end-rank {
+  color: #f0c14a;
+}
+
+.round-end-standing.busted {
+  opacity: 0.85;
+}
+
+.round-end-standing-name {
+  font-weight: 600;
+  min-width: 5rem;
+  flex: 1 1 6rem;
+}
+
+.round-end-standing .round-end-final {
+  font-size: 1.2rem;
+}
+
+.round-end-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  /* Melds and hand share one face size in result cards */
+  --round-end-tile-w: var(--tile-face-w);
+  --round-end-tile-h: var(--tile-face-h);
+  --meld-tile-w: var(--round-end-tile-w);
+  --meld-tile-h: var(--round-end-tile-h);
+  --tile-sm-w: var(--round-end-tile-w);
+  --tile-sm-h: var(--round-end-tile-h);
+}
+
+.round-end-card.is-you {
+  box-shadow: inset 0 0 0 1px rgba(240, 184, 74, 0.45);
+}
+
+.round-end-card.won {
+  border-color: rgba(196, 30, 58, 0.55);
+}
+
+.round-end-card.ready {
+  border-color: rgba(46, 160, 96, 0.45);
+}
+
+.round-end-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.round-end-score-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.75rem;
+  margin-bottom: 0.35rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.round-end-rank {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 1.6rem;
+}
+
+.round-end-final {
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: #f2e8d5;
+}
+
+.round-end-uma-breakdown {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.round-end-uma.plus {
+  color: #3ecf8e;
+}
+
+.round-end-uma.minus {
+  color: #e85d5d;
+}
+
+.round-end-name {
+  font-weight: 600;
+}
+
+.round-end-wind {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.round-end-status {
+  margin-left: auto;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+}
+
+.round-end-status.status-won {
+  background: rgba(196, 30, 58, 0.35);
+  color: #ffb3c0;
+}
+
+.round-end-status.status-ready {
+  background: rgba(46, 160, 96, 0.3);
+  color: #8fe8b0;
+}
+
+.round-end-status.status-not-ready {
+  background: rgba(120, 120, 120, 0.25);
+  color: var(--muted);
+}
+
+.round-end-hand {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  min-height: auto;
+  padding: 0;
+}
+
+/* Dedicated yaku panel inside a winning player's card */
+.yaku-box {
+  margin: 0;
+  padding: 0.65rem 0.75rem 0.55rem;
+  background: linear-gradient(
+    160deg,
+    rgba(196, 30, 58, 0.22) 0%,
+    rgba(12, 18, 16, 0.55) 55%
+  );
+  border: 1px solid rgba(232, 168, 56, 0.45);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex: 1 1 auto;
+  min-width: min(12rem, 100%);
+  align-self: stretch;
+}
+
+.round-end-body {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.85rem 1.1rem;
+  margin-top: 0.35rem;
+  width: 100%;
+}
+
+/* Tiles keep content width; leftover row space goes to the yaku card */
+.round-end-body .round-end-tiles {
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.yaku-box-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.45rem;
+}
+
+.yaku-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.yaku-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.yaku-name {
+  font-family: var(--font-tile);
+  font-size: clamp(1.15rem, 2.4vw, 1.55rem);
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.yaku-item.yakuman .yaku-name {
+  color: #ffc857;
+  font-size: clamp(1.25rem, 2.6vw, 1.7rem);
+}
+
+.yaku-han {
+  flex-shrink: 0;
+  font-family: var(--font-ui);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--accent);
+  min-width: 1.5rem;
+  text-align: right;
+}
+
+.yaku-item.yaku-dora .yaku-name {
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  font-weight: 600;
+  color: #f0d9a8;
+}
+
+.yaku-box-footer {
+  margin-top: 0.55rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgba(232, 168, 56, 0.28);
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.yaku-box-empty {
+  font-family: var(--font-tile);
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.round-end-han {
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+/* Melds + concealed hand: one row when they fit; else melds then hand */
+.round-end-tiles {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 1.35rem;
+  margin: 0.35rem 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.round-end-tiles.is-stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  overflow: visible;
+}
+
+.round-end-tiles.is-stacked .round-end-melds,
+.round-end-tiles.is-stacked .round-end-hand {
+  max-width: 100%;
+  align-self: flex-start;
+}
+
+/* Scroll horizontally on the melds host; keep overflow visible on the row
+   so stacked kan/kin tiles are not clipped (overflow-x:auto forces y clip). */
+.round-end-tiles.is-stacked .round-end-melds {
+  overflow-x: auto;
+  overflow-y: visible;
+  padding-bottom: 2px;
+}
+
+.round-end-tiles.is-stacked .meld-row {
+  overflow: visible;
+  max-width: none;
+}
+
+.round-end-tiles.is-stacked .round-end-hand {
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+/* Result cards: one meld row; slots contain stacked kan/kin (no clip) */
+.round-end-card .melds-block.round-end-melds {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0;
+  padding-top: 0;
+  width: auto;
+  max-width: 100%;
+  overflow: visible;
+  margin: 0;
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+
+.round-end-card .round-end-hand,
+.round-end-card .round-end-hand.winning-hand {
+  flex: 0 0 auto;
+  margin: 0;
+  min-height: 0;
+  align-items: flex-end;
+  align-self: flex-end;
+  flex-wrap: nowrap;
+  width: max-content;
+  max-width: 100%;
+}
+
+.round-end-card .win-tile-slot {
+  align-items: flex-end;
+}
+
+.round-end-card .meld-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  width: max-content;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.round-end-card .meld-group {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  position: relative;
+}
+
+/* Two sideways tiles stacked — size the slot so both stay visible */
+.round-end-card .meld-tile-slot.has-added-above,
+.round-end-card .meld-tile-slot:has(> .kakan-stack) {
+  width: var(--meld-tile-h);
+  height: calc(2 * var(--meld-tile-w));
+  align-items: flex-end;
+  z-index: 1;
+  overflow: visible;
+}
+
+.round-end-card .kakan-stack {
+  position: relative;
+  overflow: visible;
+}
+
+.round-end-card .kakan-stack .added-above {
+  margin-bottom: 0;
+}
+
+.round-end-card .round-end-discards {
+  margin: 0.4rem 0 0.15rem;
+  width: max-content;
+  max-width: 100%;
+  justify-items: start;
+  /* Summary rivers size to content — don't reserve empty rows */
+  height: auto;
+  min-height: 0;
+}
+
+.round-end-card .round-end-discards .tile,
+.round-end-card .round-end-discards .tile.small {
+  width: var(--tile-face-w);
+  height: var(--tile-face-h);
+}
+
+.your-area.riichi-locked {
+  box-shadow: none;
+}
+
+.btn.claim.win {
+  background: linear-gradient(135deg, #c41e3a, #9a1830);
+  color: #fff;
+  font-weight: 700;
+}
+
+.game-round-end .your-area .hand {
+  justify-content: center;
+}
+
+.game {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow: visible;
+  max-width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.game-board {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  overflow: visible;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  /* Room around the pentagon for outside docks */
+  padding: 0.75rem 0.5rem 1rem;
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+/* Host setup — in the HUD above the table (normal document flow) */
+.host-start-panel {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  width: 100%;
+  margin: 0.35rem 0 0;
+  padding: 0.75rem 0.85rem;
+  box-sizing: border-box;
+  background: #14261f;
+  border: 2px solid var(--accent, #e8a838);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+
+.host-start-panel.is-visible {
+  display: flex !important;
+}
+
+.host-start-panel[hidden] {
+  display: none !important;
+}
+
+.host-start-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent, #e8a838);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.host-start-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem 1rem;
+  max-width: 40rem;
+}
+
+.host-start-panel .game-length-label {
+  flex: 1 1 12rem;
+  align-items: flex-start;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.host-start-panel .game-length-select {
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.6rem;
+  font-size: 1rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.host-start-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #c5d4c8;
+  text-align: left;
+  line-height: 1.35;
+  max-width: 40rem;
+}
+
+.host-start-panel .btn.primary {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 10rem;
+  font-size: 1.05rem;
+  padding: 0.6rem 1.1rem;
+}
+
+.host-start-panel .btn.primary.is-waiting,
+#btn-start-actions.is-waiting {
+  opacity: 0.55;
+}
+
+.host-start-panel .btn.primary.is-busy,
+#btn-start-actions.is-busy {
+  opacity: 0.75;
+}
+
+/* Lobby: big name chips in each seat as soon as someone joins */
+.lobby-hand-slot {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  width: max-content;
+  max-width: 100%;
+}
+
+.lobby-seat-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  min-width: 7.5rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(94, 196, 160, 0.35);
+  background: rgba(8, 24, 20, 0.88);
+  text-align: center;
+}
+
+.lobby-seat-chip.filled {
+  border-color: rgba(232, 168, 56, 0.7);
+  background: rgba(20, 40, 32, 0.95);
+  box-shadow: 0 0 0 1px rgba(232, 168, 56, 0.25);
+}
+
+.lobby-seat-chip.vacant {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.lobby-chip-seat {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.lobby-chip-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lobby-seat-index {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  width: 100%;
+}
+
+.phase-lobby .seat.lobby-occupied .seat-header {
+  border-color: rgba(232, 168, 56, 0.55);
+  background: rgba(20, 40, 32, 0.9);
+}
+
+.phase-lobby .seat.lobby-occupied .seat-header .name {
+  max-width: 8rem;
+  font-weight: 600;
+  color: var(--text);
+  font-style: normal;
+}
+
+/* Room / seat title + dora/ura — bottom left of board */
+.info-dock {
+  position: absolute;
+  left: 0.25rem;
+  bottom: 0.25rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  max-width: min(42%, 300px);
+  pointer-events: none;
+}
+
+.info-dock > * {
+  pointer-events: auto;
+}
+
+.game-length-locked {
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.4rem 0.55rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.game-length-locked:not([hidden]) {
+  display: flex;
+}
+
+.seat-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.45rem;
+  padding: 0.4rem 0.55rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.seat-title .room-badge {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.seat-title .room-badge strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.seat-title .seat-label {
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.indicators-bar {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-width: 100%;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.indicators-bar[hidden] {
+  display: none !important;
+}
+
+.indicators-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.dora-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+/* Indicators keep face-tile size (not hand / seat-back size) */
+.dora-row .tile,
+.dora-row .tile.small {
+  width: var(--tile-face-w);
+  height: var(--tile-face-h);
+}
+
+.dora-row .tile-back {
+  width: var(--tile-face-w);
+  height: var(--tile-face-h);
+  opacity: 0.75;
+}
+
+.ura-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  width: 100%;
+  margin-top: 0.15rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(142, 181, 255, 0.25);
+}
+
+.ura-label {
+  color: #8eb5ff;
+}
+
+/* Tile calls — bottom right, outside the table */
+.calls-dock {
+  position: absolute;
+  right: 0.25rem;
+  bottom: 0.25rem;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+  max-width: min(46%, 320px);
+  pointer-events: none;
+}
+
+.calls-dock > * {
+  pointer-events: auto;
+}
+
+.rinshan-count {
+  color: var(--muted);
+  font-size: inherit;
+}
+
+.riichi-pot {
+  color: #f0b84a;
+  font-weight: 600;
+  font-size: inherit;
+}
+
+.hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--panel);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.hud-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.status-message {
+  margin: 0;
+  text-align: left;
+  color: var(--muted);
+}
+
+.lobby-roster {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.75rem;
+  background: rgba(8, 16, 14, 0.65);
+  border: 1px solid rgba(94, 196, 160, 0.3);
+  border-radius: 10px;
+}
+
+.lobby-roster[hidden] {
+  display: none !important;
+}
+
+.lobby-roster-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent, #5ec4a0);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lobby-roster-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.35rem 0.75rem;
+}
+
+.lobby-roster-seat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.4rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 0.82rem;
+}
+
+.lobby-roster-seat.filled {
+  border: 1px solid rgba(94, 196, 160, 0.25);
+}
+
+.lobby-roster-seat.empty {
+  opacity: 0.55;
+}
+
+.lobby-roster-seat.is-you {
+  box-shadow: inset 0 0 0 1px rgba(240, 184, 74, 0.55);
+}
+
+.lobby-roster-seat.is-host .lobby-seat-name {
+  color: var(--accent, #5ec4a0);
+  font-weight: 600;
+}
+
+.lobby-seat-num {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.lobby-seat-name {
+  font-weight: 500;
+}
+
+.lobby-seat-tags {
+  width: 100%;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.seat-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.table {
+  /* Exactly 1.5× the previous viewport-fit size */
+  position: relative;
+  width: calc(
+    min(
+      100%,
+      calc(100vw - 1rem),
+      calc(78vh * var(--pentagon-ratio))
+    ) * var(--table-scale)
+  );
+  margin: 0 auto;
+  min-height: 0;
+  aspect-ratio: var(--pentagon-ratio);
+  max-height: calc(
+    min(78vh, calc((100vw - 1rem) / var(--pentagon-ratio))) * var(--table-scale)
+  );
+  height: auto;
+  flex-shrink: 0;
+  background:
+    radial-gradient(ellipse at 50% 55%, rgba(46, 120, 96, 0.32) 0%, transparent 52%),
+    linear-gradient(145deg, var(--felt-light), var(--felt));
+  border-radius: 0;
+  border: none;
+  clip-path: var(--pentagon);
+  filter:
+    drop-shadow(0 0 1px #0d281f)
+    drop-shadow(0 0 1px #0d281f)
+    drop-shadow(0 0 2px #0d281f)
+    drop-shadow(0 10px 28px rgba(0, 0, 0, 0.45));
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.38);
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.table::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  clip-path: var(--pentagon);
+  box-shadow: inset 0 0 0 1px rgba(94, 196, 160, 0.2);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/*
+ * Local player: same radial inset / scale as opponents; hand on the outer edge.
+ */
+.seat-bottom {
+  left: 50%;
+  top: 85%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  width: var(--seat-bottom-w);
+  height: var(--seat-h);
+}
+
+.seat-bottom .seat-inner {
+  transform: rotate(var(--rotate-bottom)) scale(var(--seat-scale));
+}
+
+.seat-bottom .seat-edge-cluster {
+  width: max-content;
+  max-width: none;
+}
+
+.seat-bottom .hand {
+  width: max-content;
+  max-width: none;
+  margin-top: 0;
+  padding: 0;
+  min-height: var(--tile-h);
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: var(--hand-gap);
+  overflow: visible;
+}
+
+.seat-bottom .melds-row {
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  flex-wrap: nowrap;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  gap: 4px;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+}
+
+.seat-bottom .discard-row {
+  width: max-content;
+  max-width: none;
+  max-height: none;
+  margin-bottom: 0;
+  position: relative;
+  top: 0;
+  overflow: visible;
+}
+
+.seat-edge-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.2rem;
+  width: max-content;
+  max-width: none;
+  /* Pin to outer edge — melds grow toward center without moving the hand */
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  top: auto;
+  transform: translate(-50%, var(--hand-outward));
+  z-index: 2;
+  margin: 0;
+  flex: unset;
+}
+
+.seat {
+  position: absolute;
+  padding: 0;
+  background: transparent;
+  width: var(--seat-w);
+  height: var(--seat-h);
+  z-index: 1;
+  box-sizing: border-box;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+}
+
+.seat-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: stretch;
+  gap: 0.2rem;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  transform-origin: center center;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* Same scale on every seat so discard distance to center matches */
+.seat-lr .seat-inner {
+  transform: rotate(var(--rotate-lr)) scale(var(--seat-scale));
+}
+
+.seat-ur .seat-inner {
+  transform: rotate(var(--rotate-ur)) scale(var(--seat-scale));
+}
+
+.seat-ul .seat-inner {
+  transform: rotate(var(--rotate-ul)) scale(var(--seat-scale));
+}
+
+.seat-ll .seat-inner {
+  transform: rotate(var(--rotate-ll)) scale(var(--seat-scale));
+}
+
+/*
+ * After seat rotation, column top faces table center.
+ * Label + discards toward center; melds + hand at the outer edge.
+ * Seat labels share the seat rotation (readable from that player's side).
+ */
+.seat-tiles {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.25rem;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+  position: relative;
+}
+
+/* Wind / name / points toward center, clear of the river below */
+.seat-river-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  margin-bottom: auto;
+  width: max-content;
+  max-width: 100%;
+  position: relative;
+  top: calc(-1 * var(--discard-inward));
+  z-index: 1;
+}
+
+/* Riichi stick sits in normal flow between label and river (toward table center) */
+.riichi-stick {
+  display: none;
+  flex: 0 0 auto;
+  width: calc(
+    var(--discard-cols) * var(--tile-seat-w) + (var(--discard-cols) - 1) * var(--discard-gap)
+  );
+  max-width: 100%;
+  height: 0.7rem;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.seat-river-cluster.has-riichi-stick .riichi-stick,
+.riichi-stick:not([hidden]) {
+  display: block;
+}
+
+.riichi-stick img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.seat-river-cluster.has-riichi-stick {
+  gap: 0.28rem;
+}
+
+.seat .seat-edge-cluster {
+  margin-top: 0;
+  width: max-content;
+  max-width: none;
+}
+
+/* Melds sit above the pinned hand; empty row stays zero-height */
+.seat .melds-row,
+.seat-bottom .melds-row {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.seat .discard-row {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+  width: max-content;
+  max-width: none;
+  max-height: none;
+  min-height: 0;
+  position: relative;
+  top: 0;
+  overflow: visible;
+}
+
+.seat .melds-row {
+  flex: 0 0 auto;
+  overflow: visible;
+  flex-wrap: nowrap;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  width: max-content;
+  max-width: none;
+  gap: 4px;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+}
+
+.seat .hand-back,
+.seat .hand.revealed-hand {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 1px;
+  justify-content: center;
+  width: max-content;
+  max-width: none;
+  flex: 0 0 auto;
+  margin-top: 0;
+  overflow: visible;
+}
+
+/*
+ * Seat anchors: equal outward inset so hands sit near each edge.
+ */
+.seat-lr {
+  left: 77%;
+  top: 65%;
+  transform: translate(-50%, -50%);
+}
+
+.seat-ur {
+  left: 66%;
+  top: 31%;
+  transform: translate(-50%, -50%);
+}
+
+.seat-ul {
+  left: 34%;
+  top: 31%;
+  transform: translate(-50%, -50%);
+}
+
+.seat-ll {
+  left: 23%;
+  top: 65%;
+  transform: translate(-50%, -50%);
+}
+
+/* Compact center stats — leave room for inward discard rivers */
+.seat-center,
+.table-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  width: min(18%, 120px);
+  max-width: 120px;
+  background: rgba(8, 16, 14, 0.55);
+  border: 1px solid rgba(94, 196, 160, 0.22);
+  border-radius: 10px;
+  padding: 0.35rem 0.4rem;
+  text-align: center;
+  z-index: 3;
+  pointer-events: none;
+  box-sizing: border-box;
+  line-height: 1.25;
+}
+
+.table-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15rem;
+  width: 100%;
+}
+
+.stat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-row strong {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.stat-row.riichi-pot strong {
+  color: #f0b84a;
+}
+
+.table-stats .stat-row[hidden] {
+  display: none !important;
+}
+
+.table-center-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  width: 100%;
+  padding-top: 0.2rem;
+  border-top: 1px solid rgba(94, 196, 160, 0.18);
+  font-size: 0.6rem;
+  color: rgba(232, 237, 242, 0.7);
+}
+
+.table-center-meta .claim-wait {
+  color: var(--turn-glow);
+  font-weight: 600;
+}
+
+.table-center-meta:empty {
+  display: none;
+}
+
+.seat-center .turn-hint {
+  display: none;
+}
+
+.seat.is-turn .hand-back .tile-back,
+.seat.is-turn .hand.revealed-hand .tile,
+.seat.is-turn .hand .tile {
+  box-shadow: 0 0 0 2px var(--turn-glow), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.seat.is-turn {
+  z-index: 2;
+}
+
+.seat .tile.small,
+.seat .discard-row .tile {
+  width: var(--tile-seat-w);
+  height: var(--tile-seat-h);
+}
+
+/* Hands (live + revealed) share one larger size on every seat */
+.seat .hand .tile,
+.seat .hand .tile.small,
+.seat .hand.revealed-hand .tile,
+.seat .hand.revealed-hand .tile.small,
+.seat-bottom .hand .tile,
+.seat-bottom .hand .tile.small {
+  width: var(--hand-tile-w);
+  height: var(--hand-tile-h);
+}
+
+.seat .tile-back {
+  width: var(--tile-back-w);
+  height: var(--tile-back-h);
+}
+
+.seat.is-you {
+  outline: none;
+}
+
+.seat-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.35rem;
+  margin: 0 0 0.15rem;
+  padding: 0.12rem 0.35rem;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  transform: none;
+  transform-origin: center center;
+  justify-content: center;
+  text-align: center;
+  width: max-content;
+  /* Stay within the discard river width so the label doesn’t cover tiles */
+  max-width: calc(
+    var(--discard-cols) * var(--tile-seat-w) + (var(--discard-cols) - 1) * var(--discard-gap)
+  );
+  background: rgba(8, 16, 14, 0.55);
+  border: 1px solid rgba(94, 196, 160, 0.22);
+  border-radius: 6px;
+  flex: 0 0 auto;
+  pointer-events: none;
+  z-index: 2;
+  position: relative;
+}
+
+.seat-header .name {
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seat-header .wind {
+  font-family: var(--font-tile);
+  font-weight: 700;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.seat-header .points {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
+.seat-header .count {
+  color: var(--muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.seat.empty {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.phase-lobby .seat .seat-header {
+  font-size: 0.9rem;
+  padding: 0.4rem 0.65rem;
+}
+
+.phase-lobby .seat:not(.empty) .seat-header {
+  border-color: rgba(94, 196, 160, 0.55);
+  background: rgba(8, 24, 20, 0.85);
+}
+
+.phase-lobby .seat:not(.empty) .seat-header .name {
+  max-width: 9rem;
+  font-weight: 600;
+  color: var(--text);
+  font-style: normal;
+}
+
+.phase-lobby .seat.empty .seat-header .name {
+  color: var(--muted);
+}
+
+.hand-back {
+  display: flex;
+  gap: 1px;
+  flex-wrap: nowrap;
+}
+
+.tile-back {
+  width: var(--tile-back-w);
+  height: var(--tile-back-h);
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.tile-back img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.discard-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--discard-gap);
+  justify-content: flex-start;
+  width: max-content;
+  max-width: none;
+  /* Fixed height for max river depth — hand stays put when row 3 appears */
+  min-height: calc(
+    var(--discard-rows-reserved) * var(--tile-sm-h) +
+      (var(--discard-rows-reserved) - 1) * var(--discard-gap)
+  );
+  height: calc(
+    var(--discard-rows-reserved) * var(--tile-sm-h) +
+      (var(--discard-rows-reserved) - 1) * var(--discard-gap)
+  );
+  margin-top: 0.25rem;
+  overflow: visible;
+  box-sizing: content-box;
+}
+
+.discard-main {
+  display: grid;
+  grid-template-columns: repeat(var(--discard-cols), var(--tile-sm-w));
+  gap: var(--discard-gap);
+  justify-content: center;
+  align-content: start;
+  width: calc(
+    var(--discard-cols) * var(--tile-sm-w) + (var(--discard-cols) - 1) * var(--discard-gap)
+  );
+}
+
+.discard-tail {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--discard-gap);
+  justify-content: center;
+  align-items: flex-end;
+  width: max-content;
+  max-width: none;
+}
+
+.seat .discard-main {
+  grid-template-columns: repeat(var(--discard-cols), var(--tile-seat-w));
+  width: calc(
+    var(--discard-cols) * var(--tile-seat-w) + (var(--discard-cols) - 1) * var(--discard-gap)
+  );
+}
+
+.seat .discard-row {
+  margin-top: 0;
+  min-height: calc(
+    var(--discard-rows-reserved) * var(--tile-seat-h) +
+      (var(--discard-rows-reserved) - 1) * var(--discard-gap)
+  );
+  height: calc(
+    var(--discard-rows-reserved) * var(--tile-seat-h) +
+      (var(--discard-rows-reserved) - 1) * var(--discard-gap)
+  );
+}
+
+.your-area {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.25rem 0.25rem 0.35rem;
+  margin-top: 0;
+  position: relative;
+  z-index: 3;
+  max-width: 100%;
+  overflow: visible;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.your-area[hidden] {
+  display: none !important;
+}
+
+.your-area.riichi-locked {
+  box-shadow: none;
+}
+
+.your-area.riichi-locked .tile:not(.selectable),
+.seat-bottom.riichi-locked .tile:not(.selectable) {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.your-area.furiten {
+  box-shadow: none;
+}
+
+/* Round-end summary: face-up hand tiles; called/added meld tiles stay sideways */
+.round-end-card .tile:not(.sideways),
+.round-end-card .tile-back {
+  transform: none;
+  transform-origin: center center;
+}
+
+.round-end-card .tile.claimed-highlight:not(.sideways) {
+  transform: scale(1.05);
+}
+
+/* Discard sideways only — meld sideways uses .meld-group rules below */
+.seat-bottom .discard-row .tile.sideways {
+  width: var(--tile-seat-w);
+  height: var(--tile-seat-h);
+  transform: rotate(90deg);
+  transform-origin: center center;
+  margin: 0;
+}
+
+.seat-bottom .hand {
+  max-width: none;
+  width: max-content;
+  justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.hand {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--hand-gap);
+  justify-content: center;
+  align-items: flex-end;
+  min-height: var(--tile-h);
+  padding: 0;
+  overflow: visible;
+}
+
+.melds-row {
+  display: flex;
+  flex-wrap: nowrap;
+  flex-direction: row-reverse;
+  gap: 6px;
+  justify-content: flex-start;
+  align-items: flex-end;
+  min-height: 0;
+  margin-bottom: 0;
+  overflow: visible;
+}
+
+.meld-group {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 0;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.meld-group .meld-type {
+  display: none;
+}
+
+.meld-tile-slot {
+  position: relative;
+  flex-shrink: 0;
+  width: var(--meld-tile-w);
+  height: var(--meld-tile-h);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: visible;
+}
+
+/* Sideways called tile needs the landscape footprint so neighbors stay flush */
+.meld-tile-slot:has(> .tile.sideways),
+.meld-tile-slot:has(> .kakan-stack) {
+  width: var(--meld-tile-h);
+}
+
+/* Kakan: 4th tile in column above sideways base; stack bottom aligns with other meld tiles */
+.kakan-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  overflow: visible;
+}
+
+.meld-group .tile,
+.meld-group .tile.small,
+.seat .meld-group .tile,
+.seat .meld-group .tile.small,
+.seat-bottom .meld-group .tile,
+.seat-bottom .meld-group .tile.small {
+  width: var(--meld-tile-w);
+  height: var(--meld-tile-h);
+  overflow: visible;
+}
+
+/*
+ * Sideways called tiles (chi / large chi / pon / kan):
+ * Match calls/*.png — landscape layout box, bottoms flush with upright tiles.
+ * Rotate the image +90deg (clockwise) so the face matches the reference art.
+ */
+.meld-group .tile.sideways,
+.meld-group .tile.small.sideways,
+.seat .meld-group .tile.sideways,
+.seat .meld-group .tile.small.sideways,
+.seat-bottom .meld-group .tile.sideways,
+.seat-bottom .meld-group .tile.small.sideways {
+  width: var(--meld-tile-h);
+  height: var(--meld-tile-w);
+  position: relative;
+  transform: none;
+  margin: 0;
+  overflow: visible;
+}
+
+.meld-group .tile.sideways img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--meld-tile-w);
+  height: var(--meld-tile-h);
+  transform: translate(-50%, -50%) rotate(90deg);
+  transform-origin: center center;
+}
+
+.meld-group .tile.claimed-highlight.sideways {
+  transform: none;
+}
+
+.round-end-card .meld-group .tile.sideways {
+  transform: none;
+}
+
+.round-end-card .meld-group .tile.sideways img {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.meld-group.kan .tile,
+.meld-group.kin .tile {
+  opacity: 1;
+}
+
+.meld-group.kan.closed .tile,
+.meld-group.kin.closed .tile {
+  opacity: 1;
+}
+
+.tile.claimed-highlight {
+  box-shadow: 0 0 0 3px var(--accent), 0 0 14px rgba(232, 168, 56, 0.65);
+  z-index: 3;
+}
+
+/* Keep claim highlight above tsumogiri / tedashi river styling */
+.discard-row .tile.claimed-highlight,
+.discard-row .tile.claimed-highlight.tsumogiri,
+.discard-row .tile.claimed-highlight.tedashi {
+  filter: none;
+  box-shadow: 0 0 0 3px var(--accent), 0 0 14px rgba(232, 168, 56, 0.65);
+}
+
+.discard-row .tile.claimed-highlight.tsumogiri::after,
+.discard-row .tile.claimed-highlight.tedashi::after {
+  opacity: 0.35;
+}
+
+.meld-group .tile.claimed-highlight,
+.meld-group .tile.claimed-highlight.sideways {
+  transform: none;
+  box-shadow: 0 0 0 3px var(--accent), 0 0 14px rgba(232, 168, 56, 0.65);
+}
+
+.winning-hand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.win-tile-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(196, 30, 58, 0.55);
+}
+
+.win-tile-label {
+  font-family: 'Source Sans 3', 'Noto Sans SC', sans-serif;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #ff9fb3;
+  line-height: 1;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.tile.win-tile {
+  box-shadow: 0 0 0 2px #c41e3a, 0 0 12px rgba(196, 30, 58, 0.45);
+}
+
+.claim-panel,
+.self-meld-panel,
+.abort-nine-panel,
+.riichi-panel,
+.tsumo-panel {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  background: rgba(12, 22, 20, 0.88);
+  border: 1px solid rgba(94, 196, 160, 0.45);
+  border-radius: 10px;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.claim-panel[hidden],
+.self-meld-panel[hidden],
+.abort-nine-panel[hidden],
+.riichi-panel[hidden],
+.tsumo-panel[hidden] {
+  display: none !important;
+}
+
+.riichi-panel,
+.tsumo-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.riichi-panel .btn,
+.tsumo-panel .btn {
+  width: 100%;
+}
+
+.claim-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--turn-glow);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.claim-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+}
+
+.btn.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  border-color: var(--muted);
+  color: var(--text);
+}
+
+.btn.claim {
+  background: #2a4a62;
+  color: var(--text);
+  padding: 0.45rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.btn.claim.kin {
+  background: #4a3068;
+}
+
+.btn.claim.kan {
+  background: #3d5a44;
+}
+
+.btn.claim.chi {
+  background: #4a4a2a;
+}
+
+.btn.claim.large-chi {
+  background: #3a3a28;
+  opacity: 0.92;
+}
+
+.tile {
+  width: var(--tile-w);
+  height: var(--tile-h);
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.tile img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.tile.small {
+  width: var(--tile-sm-w);
+  height: var(--tile-sm-h);
+}
+
+.discard-row .tile {
+  width: var(--tile-sm-w);
+  height: var(--tile-sm-h);
+}
+
+.discard-row .tile.sideways {
+  width: var(--tile-sm-w);
+  height: var(--tile-sm-h);
+  transform: rotate(90deg);
+  margin: 0;
+  transform-origin: center center;
+}
+
+.seat .discard-row .tile.sideways {
+  width: var(--tile-seat-w);
+  height: var(--tile-seat-h);
+}
+
+.tile.selectable {
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+}
+
+.tile.selectable:hover {
+  outline-color: var(--accent);
+}
+
+.tile.kuikae-blocked {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
+}
+
+.tile.just-drawn {
+  margin-left: 0.55rem;
+  box-shadow: 0 0 0 2px var(--accent), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.hand-back .tile-back.just-drawn {
+  margin-left: 0.45rem;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* River: draw-discard (tsumogiri) vs cut-from-hand (tedashi) — same on every seat */
+.discard-row .tile.tsumogiri {
+  filter: brightness(0.9) saturate(0.75);
+  box-shadow: inset 0 0 0 1px rgba(140, 175, 195, 0.65);
+}
+
+.discard-row .tile.tsumogiri::after {
+  content: '';
+  position: absolute;
+  left: 15%;
+  right: 15%;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(140, 175, 195, 0.9);
+  pointer-events: none;
+}
+
+.discard-row .tile.tedashi {
+  filter: none;
+  box-shadow:
+    0 0 0 1px rgba(232, 168, 56, 0.55),
+    0 2px 0 0 rgba(232, 168, 56, 0.85);
+}
+
+.discard-row .tile.tedashi::after {
+  content: '';
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(232, 168, 56, 0.95);
+  pointer-events: none;
+}
+
+.discard-row .tile {
+  position: relative;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0;
+}
+
+.game-length-picker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.game-length-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.game-length-select {
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text, #e8f0ec);
+  background: rgba(8, 16, 14, 0.75);
+  border: 1px solid rgba(94, 196, 160, 0.35);
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+  min-width: 11rem;
+}
+
+.game-length-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.game-length-locked strong {
+  font-size: 0.9rem;
+  color: var(--accent, #5ec4a0);
+  font-weight: 600;
+}
+
+.round-end-card.busted {
+  outline: 1px solid rgba(196, 30, 58, 0.55);
+}
+
+@media (max-width: 640px) {
+  :root {
+    --tile-face-w: clamp(20px, 3.6vw, 28px);
+    --tile-face-h: clamp(27px, 4.85vw, 38px);
+    --meld-tile-w: clamp(22px, 4vw, 31px);
+    --meld-tile-h: clamp(30px, 5.4vw, 42px);
+    --hand-tile-w: clamp(26px, 4.6vw, 37px);
+    --hand-tile-h: clamp(35px, 6.1vw, 50px);
+    --tile-back-w: var(--hand-tile-w);
+    --tile-back-h: var(--hand-tile-h);
+    --seat-scale: 0.58;
+    --discard-inward: 14%;
+    --hand-outward: 8%;
+  }
+
+  .table {
+    width: calc(
+      min(
+        100%,
+        calc(100vw - 0.5rem),
+        calc(70vh * var(--pentagon-ratio))
+      ) * var(--table-scale)
+    );
+    max-height: calc(
+      min(70vh, calc((100vw - 0.5rem) / var(--pentagon-ratio))) * var(--table-scale)
+    );
+    font-size: 0.85rem;
+  }
+
+  .seat {
+    width: var(--seat-w);
+    height: var(--seat-h);
+    padding: 0;
+    overflow: visible;
+  }
+
+  .seat-lr {
+    left: 77%;
+    top: 65%;
+  }
+
+  .seat-ll {
+    left: 23%;
+    top: 65%;
+  }
+
+  .seat-ur {
+    left: 66%;
+    top: 31%;
+  }
+
+  .seat-ul {
+    left: 34%;
+    top: 31%;
+  }
+
+  .seat-center,
+  .table-center {
+    width: min(22%, 100px);
+    max-width: 100px;
+    top: 50%;
+    font-size: 0.6rem;
+    padding: 0.28rem 0.32rem;
+  }
+
+  .seat-bottom {
+    left: 50%;
+    top: 85%;
+    bottom: auto;
+    width: var(--seat-bottom-w);
+    height: var(--seat-h);
+    gap: 0;
+  }
+
+  .seat-bottom .seat-inner {
+    transform: rotate(var(--rotate-bottom)) scale(var(--seat-scale));
+  }
+
+  .seat-bottom .hand,
+  .hand {
+    gap: 1px;
+  }
+
+  .seat-lr .seat-inner { transform: rotate(var(--rotate-lr)) scale(var(--seat-scale)); }
+  .seat-ur .seat-inner { transform: rotate(var(--rotate-ur)) scale(var(--seat-scale)); }
+  .seat-ul .seat-inner { transform: rotate(var(--rotate-ul)) scale(var(--seat-scale)); }
+  .seat-ll .seat-inner { transform: rotate(var(--rotate-ll)) scale(var(--seat-scale)); }
+
+  .info-dock {
+    left: 0.1rem;
+    bottom: 0.1rem;
+    max-width: min(52%, 240px);
+  }
+
+  .seat-title {
+    padding: 0.3rem 0.4rem;
+    font-size: 0.72rem;
+  }
+
+  .indicators-bar {
+    padding: 0.35rem 0.4rem;
+  }
+
+  .calls-dock {
+    right: 0.1rem;
+    bottom: 0.1rem;
+    max-width: min(55%, 240px);
+  }
+
+  .claim-panel,
+  .self-meld-panel,
+  .abort-nine-panel,
+  .riichi-panel,
+  .tsumo-panel {
+    padding: 0.45rem 0.5rem;
+  }
+
+  .claim-buttons {
+    gap: 0.35rem;
+  }
+
+  .btn.claim {
+    padding: 0.35rem 0.55rem;
+    font-size: 0.75rem;
+  }
+
+  .game-round-end .table {
+    max-height: calc(
+      min(72vh, calc((100vw - 0.5rem) / var(--pentagon-ratio))) * var(--table-scale)
+    );
+  }
+
+  .game-round-end .seat-lr .seat-inner {
+    transform: rotate(var(--rotate-lr)) scale(0.58);
+  }
+
+  .game-round-end .seat-ur .seat-inner {
+    transform: rotate(var(--rotate-ur)) scale(0.58);
+  }
+
+  .game-round-end .seat-ul .seat-inner {
+    transform: rotate(var(--rotate-ul)) scale(0.58);
+  }
+
+  .game-round-end .seat-ll .seat-inner {
+    transform: rotate(var(--rotate-ll)) scale(0.58);
+  }
+
+  .game-round-end .seat-bottom .seat-inner {
+    transform: rotate(var(--rotate-bottom)) scale(0.58);
+  }
+}
