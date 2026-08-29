@@ -147,6 +147,17 @@ io.on('connection', (socket) => {
     if (result.ok) emitState(room);
   });
 
+  socket.on('getReplay', (_, cb) => {
+    if (!roomCode) return cb?.({ ok: false, error: 'Not in a room.' });
+    const room = getOrCreateRoom(roomCode);
+    const replay = room.getReplay();
+    if (!replay) {
+      cb?.({ ok: false, error: 'Replay is available after the match ends.' });
+      return;
+    }
+    cb?.({ ok: true, replay });
+  });
+
   socket.on('disconnect', () => {
     if (!roomCode) return;
     const room = getOrCreateRoom(roomCode);

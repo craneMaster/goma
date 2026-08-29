@@ -55,6 +55,14 @@ import {
   isFiveKanAbort,
   playersWithQuadCount,
 } from './abortive.js';
+import {
+  cloneTile,
+  cloneTiles,
+  cloneJson,
+  createReplayDocument,
+  beginHand,
+  pushHandEvent,
+} from './replay.js';
 
 const PLAYER_COUNT = 5;
 const HAND_SIZE = 13;
@@ -172,6 +180,25 @@ export class MahjongRoom {
     this.pendingAbortive = null;
     /** @type {string|null} */
     this.abortiveReason = null;
+    /** @type {object | null} in-progress match replay */
+    this.replay = null;
+    /** @type {object | null} current hand within replay */
+    this.replayHand = null;
+    /** @type {object | null} finished match replay available for download */
+    this.completedReplay = null;
+  }
+
+  /** Append an event to the current hand's replay log. */
+  recordReplay(type, payload = {}) {
+    pushHandEvent(this.replayHand, type, payload);
+  }
+
+  /**
+   * Full replay JSON after game over (omniscient — all hands/events).
+   * @returns {object | null}
+   */
+  getReplay() {
+    return this.completedReplay ? cloneJson(this.completedReplay) : null;
   }
 
   totalTiles(seat) {
@@ -297,6 +324,14 @@ export class MahjongRoom {
     }
     this.riichiPot = 0;
     this.lastRiichiPotClaim = null;
+    this.completedReplay = null;
+    this.replay = createReplayDocument({
+      code: this.code,
+      gameLength: length.id,
+      gameLengthLabel: length.label,
+      players: this.players,
+    });
+    this.replayHand = null;
     this.dealNewHand();
     this.message = `${formatRoundName(0, 1, 0)} — ${length.label}. ${this.message}`;
     return { ok: true, gameLength: length.id };
@@ -396,6 +431,17 @@ export class MahjongRoom {
       this.repeatCount
     );
     this.message = `${roundName} — ${this.players[dealer].name} (${windLabel(windForSeat(dealer, dealer))}) discards first. Indicator: ${indicatorName}.`;
+
+    this.replayHand = beginHand(this.replay, {
+      round: roundSnapshot(this.roundWindIndex, this.roundInWind, this.repeatCount),
+      dealerIndex: dealer,
+      riichiPot: this.riichiPot,
+      points: this.players.map((p) => p.points),
+      hands: this.players.map((p) => cloneTiles(p.hand)),
+      liveWall: cloneTiles(this.liveWall),
+      deadWall: cloneTiles(deadWall.tiles),
+      doraIndicators: cloneTiles(deadWall.revealedDoraIndicators()),
+    });
   }
 
   endRound(endType, winners = null) {
@@ -645,6 +691,48 @@ export class MahjongRoom {
     this.kuikaeBan = null;
     if (gameOver) this.gameLengthLocked = false;
 
+    if (this.replayHand) {
+      this.recordReplay('handEnd', { endType, gameOver: !!gameOver });
+      this.replayHand.summary = cloneJson(this.roundSummary);
+      this.replayHand.doraIndicators = cloneTiles(
+        this.deadWall?.revealedDoraIndicators() ?? []
+      );
+      const uraVisible =
+        endType === 'win' &&
+        this.winners.some((s) => this.players[s]?.riichi);
+      this.replayHand.uraDoraIndicators = uraVisible
+        ? cloneTiles(this.deadWall?.revealedUraDora() ?? [])
+        : [];
+      // Explicit full hands for every seat (replay always reveals all).
+      this.replayHand.finalHands = this.players.map((p, seat) => ({
+        seat,
+        name: p.name,
+        hand: cloneTiles(p.hand),
+        melds: cloneJson(p.melds),
+        discards: p.discards.map((d) => ({
+          tile: cloneTile(d.tile ?? d),
+          sideways: !!d.sideways,
+          tsumogiri: !!d.tsumogiri,
+          riichiDeclaration: !!d.riichiDeclaration,
+        })),
+        riichi: !!p.riichi,
+        doubleRiichi: !!p.doubleRiichi,
+        points: p.points,
+      }));
+      this.replayHand = null;
+    }
+    if (gameOver && this.replay) {
+      this.replay.meta.endedAt = new Date().toISOString();
+      this.replay.result = {
+        gameOverReason,
+        standings: cloneJson(standings),
+        gameLength: this.gameLength,
+        gameLengthLabel: parseGameLength(this.gameLength).label,
+      };
+      this.completedReplay = this.replay;
+      this.replay = null;
+    }
+
     const bustedNames = bustedSeats.map((s) => this.players[s].name).join(', ');
     let gameOverNote = '';
     if (gameOver) {
@@ -817,6 +905,7 @@ export class MahjongRoom {
         error: 'Nine terminals only on your first turn before any call (9+ distinct terminals/honors).',
       };
     }
+    this.recordReplay('abortNineTerminals', { seat });
     return this.abortiveDraw(ABORTIVE.nineTerminals);
   }
 
@@ -893,6 +982,11 @@ export class MahjongRoom {
       const tile = this.deadWall.drawRinshan();
       if (!tile) break;
       drawn.push(tile);
+      this.recordReplay('draw', {
+        seat: this.currentTurn,
+        tile: cloneTile(tile),
+        source: 'rinshan',
+      });
 
       // Kan wall: last live-wall tile moves into the dead wall for each rinshan draw.
       if (this.liveWall.length > 0) {
@@ -900,7 +994,10 @@ export class MahjongRoom {
       }
 
       const indicator = this.deadWall.revealNextDora();
-      if (indicator) flipped.push(indicator);
+      if (indicator) {
+        flipped.push(indicator);
+        this.recordReplay('doraReveal', { tile: cloneTile(indicator) });
+      }
     }
 
     if (drawn.length === 0) {
@@ -941,6 +1038,11 @@ export class MahjongRoom {
     this.lastDrawn = tile.id;
     this.lastDrawWasRinshan = false;
     this.drewThisTurn = true;
+    this.recordReplay('draw', {
+      seat,
+      tile: cloneTile(tile),
+      source: 'live',
+    });
     return { ok: true, tile };
   }
 
@@ -1032,6 +1134,7 @@ export class MahjongRoom {
       if (s === fromSeat || this.claimResponded.has(s)) continue;
       if (this.claimsForSeat(s).length === 0) {
         this.claimResponded.add(s);
+        this.recordReplay('passClaim', { seat: s, auto: true });
         added = true;
       }
     }
@@ -1062,6 +1165,7 @@ export class MahjongRoom {
       if (s === fromSeat || this.claimResponded.has(s)) continue;
       if (this.claimsForSeat(s).length === 0) {
         this.claimResponded.add(s);
+        this.recordReplay('passClaim', { seat: s, auto: true });
         added = true;
       }
     }
@@ -1441,6 +1545,12 @@ export class MahjongRoom {
       this.players[i].points += merged.deltas[i];
     }
 
+    this.recordReplay('win', {
+      mode,
+      seats: this.winners,
+      fromSeat: mode === 'ron' ? fromSeat : null,
+      winTile: cloneTile(this.winTile),
+    });
     this.endRound('win', this.winners);
     return { closed: true, win: true, seats: this.winners, seat: this.winner };
   }
@@ -1669,6 +1779,14 @@ export class MahjongRoom {
     };
     this.message = `${player.name} declared ${labels[type]}. Discard a tile.`;
 
+    this.recordReplay('claimApplied', {
+      seat,
+      claimType: type,
+      fromSeat,
+      tile: cloneTile(tile),
+      optionIndex: submission.optionIndex ?? submission.chiIndex ?? null,
+      handTileIds: submission.handTileIds ?? null,
+    });
     return { closed: true, claim: type, seat };
   }
 
@@ -1683,6 +1801,7 @@ export class MahjongRoom {
       return { ok: true, closed: false };
     }
     this.claimResponded.add(seat);
+    this.recordReplay('passClaim', { seat });
     const result = this.tryCloseClaimWindow();
     return { ok: true, ...result };
   }
@@ -1753,6 +1872,12 @@ export class MahjongRoom {
       handTileIds: match.options?.[resolvedIndex]?.handTileIds,
     });
     this.claimResponded.add(seat);
+    this.recordReplay('claim', {
+      seat,
+      claimType: type,
+      optionIndex: resolvedIndex ?? null,
+      handTileIds: match.options?.[resolvedIndex]?.handTileIds ?? null,
+    });
 
     this.autoPassDominatedClaimers();
     const result = this.tryCloseClaimWindow();
@@ -1815,6 +1940,12 @@ export class MahjongRoom {
       player.melds.push({ type: 'kan', tiles: meldTiles, open: false, fromSeat: null });
       const meldIndex = player.melds.length - 1;
       this.invalidateDoubleRiichi();
+      this.recordReplay('declareMeld', {
+        seat,
+        kind,
+        tileIds: opt.tileIds,
+        meldIndex,
+      });
       const stealTile = meldTiles[0];
       const closed = this.openClaimWindow(stealTile, seat, {
         reason: 'chankan',
@@ -1861,6 +1992,12 @@ export class MahjongRoom {
       meld.tiles.push(added);
       meld.addedTileId = added.id;
       this.invalidateDoubleRiichi();
+      this.recordReplay('declareMeld', {
+        seat,
+        kind,
+        tileIds: [opt.tileId],
+        meldIndex,
+      });
       const closed = this.openClaimWindow(added, seat, {
         reason: 'chankan',
         kanKind: 'kakan',
@@ -1889,6 +2026,12 @@ export class MahjongRoom {
       meld.tiles.push(added);
       meld.addedTileId = added.id;
       this.invalidateDoubleRiichi();
+      this.recordReplay('declareMeld', {
+        seat,
+        kind,
+        tileIds: [opt.tileId],
+        meldIndex,
+      });
       const closed = this.openClaimWindow(added, seat, {
         reason: 'chankan',
         kanKind: 'kin_kakan',
@@ -1956,6 +2099,12 @@ export class MahjongRoom {
     this.invalidateDoubleRiichi();
     this.mustDiscardAfterMeld = seat;
     this.armFiveKanAbort(seat);
+    this.recordReplay('declareMeld', {
+      seat,
+      kind,
+      tileIds: tileIds ?? null,
+      meldIndex: meldIndex ?? null,
+    });
     const names = {
       ankan: 'Ankan',
       kin_closed: 'Kin 檎',
@@ -2132,6 +2281,14 @@ export class MahjongRoom {
     this.mustDiscardAfterMeld = null;
     this.kuikaeBan = null;
 
+    this.recordReplay('discard', {
+      seat,
+      tile: cloneTile(tile),
+      sideways,
+      tsumogiri,
+      riichiDeclaration: riichiDeclarationDiscard,
+    });
+
     const closed = this.openClaimWindow(tile, seat, {
       riichiDeclaration: riichiDeclarationDiscard,
     });
@@ -2220,6 +2377,10 @@ export class MahjongRoom {
     this.message = p.doubleRiichi
       ? `${p.name} declares double riichi (両立直). Discard to confirm (${RIICHI_BET} to the pot). Hand locked.`
       : `${p.name} declares riichi (立直). Discard to confirm (${RIICHI_BET} to the pot). Hand locked.`;
+    this.recordReplay('declareRiichi', {
+      seat,
+      doubleRiichi: !!p.doubleRiichi,
+    });
     return { ok: true };
   }
 
@@ -2259,6 +2420,7 @@ export class MahjongRoom {
     p.ippatsu = false;
 
     this.message = `${p.name} cancels riichi.`;
+    this.recordReplay('undoRiichi', { seat });
     return { ok: true };
   }
 
@@ -2316,6 +2478,7 @@ export class MahjongRoom {
       return { ok: false, error: 'Need at least one yaku to win (dora alone does not count).' };
     }
 
+    this.recordReplay('declareWin', { seat, mode: 'tsumo' });
     this.finishWin(seat, 'tsumo', patterns);
     return { ok: true, patterns };
   }
@@ -2410,6 +2573,11 @@ export class MahjongRoom {
       targetPoints: TARGET_POINTS,
       canStart: this.canStart(socketId),
       canNextRound: mySeat >= 0 ? this.canNextRound(socketId) : false,
+      replayAvailable: !!(
+        this.completedReplay &&
+        this.phase === 'roundEnd' &&
+        this.roundSummary?.gameOver
+      ),
       lastDrawn: this.lastDrawn,
       needsDiscard: mySeat >= 0 ? this.needsDiscard(mySeat) : false,
       canDraw: mySeat >= 0 ? this.canDraw(mySeat) : false,

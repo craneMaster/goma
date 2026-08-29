@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=DM+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=48" />
+    <link rel="stylesheet" href="styles.css?v=52" />
   </head>
   <body>
     <div id="app">
@@ -33,6 +33,19 @@
           <button type="submit" class="btn primary">Enter room</button>
         </form>
         <p id="join-error" class="error" hidden></p>
+        <div class="lobby-replay-open">
+          <p class="lobby-replay-open-title">Review a saved game</p>
+          <label class="btn lobby-replay-file-label">
+            Open replay file
+            <input
+              type="file"
+              id="lobby-replay-file"
+              accept="application/json,.json"
+              hidden
+            />
+          </label>
+          <p id="lobby-replay-hint" class="lobby-replay-hint"></p>
+        </div>
       </section>
 
       <section id="game" class="game" hidden>
@@ -185,6 +198,26 @@
             </div>
             <p id="rematch-setup-hint" class="rematch-setup-hint"></p>
           </div>
+          <div id="replay-download" class="replay-download" hidden>
+            <div class="replay-download-row">
+              <button type="button" id="btn-view-replay" class="btn primary">
+                View replay
+              </button>
+              <button type="button" id="btn-download-replay" class="btn">
+                Download replay
+              </button>
+              <label class="btn replay-file-label">
+                Open file
+                <input
+                  type="file"
+                  id="replay-file-input"
+                  accept="application/json,.json"
+                  hidden
+                />
+              </label>
+            </div>
+            <p id="replay-download-hint" class="replay-download-hint"></p>
+          </div>
           <div id="round-end-standings" class="round-end-standings" hidden></div>
           <div id="round-end-hands" class="round-end-hands"></div>
         </div>
@@ -207,6 +240,6 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script type="module" src="app.js?v=46"></script>
+    <script type="module" src="app.js?v=51"></script>
   </body>
 </html>

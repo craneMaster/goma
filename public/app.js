@@ -1,4 +1,5 @@
 import { getMeldTileViews } from './melds.js';
+import { openReplayViewer, openReplayFile } from './replay-view.js';
 
 const socket = io();
 
@@ -54,6 +55,15 @@ const roundEndTitle = $('#round-end-title');
 const roundEndDealerNote = $('#round-end-dealer-note');
 const roundEndStandings = $('#round-end-standings');
 const roundEndHands = $('#round-end-hands');
+const replayDownload = $('#replay-download');
+const btnDownloadReplay = $('#btn-download-replay');
+const btnViewReplay = $('#btn-view-replay');
+const replayDownloadHint = $('#replay-download-hint');
+const replayFileInput = $('#replay-file-input');
+const lobbyReplayFile = $('#lobby-replay-file');
+const lobbyReplayHint = $('#lobby-replay-hint');
+/** Cached completed replay for view/download without re-fetching. */
+let cachedReplay = null;
 
 /** Latest server snapshot for this client (ES modules are strict — must declare). */
 let state = null;
@@ -911,6 +921,129 @@ function renderGameOverStandings(summary, mySeat) {
   roundEndStandings.appendChild(list);
 }
 
+function downloadJsonFile(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: 'application/json',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function replayFilename(replay, s) {
+  const code = (replay?.meta?.code || s?.code || 'table').toLowerCase();
+  const length = replay?.meta?.gameLength || s?.gameLength || 'game';
+  const ended = (replay?.meta?.endedAt || new Date().toISOString()).slice(0, 10);
+  return `mahjong-replay-${code}-${length}-${ended}.json`;
+}
+
+function syncReplayDownload(s) {
+  if (!replayDownload) return;
+  const show = !!(s?.phase === 'roundEnd' && s.roundSummary?.gameOver && s.replayAvailable);
+  replayDownload.hidden = !show;
+  if (!show) cachedReplay = null;
+  if (replayDownloadHint) {
+    replayDownloadHint.textContent = show
+      ? 'View now, download JSON, or open a saved replay file anytime from the lobby.'
+      : '';
+  }
+  if (btnDownloadReplay) btnDownloadReplay.disabled = !show;
+  if (btnViewReplay) btnViewReplay.disabled = !show;
+}
+
+function fetchReplay(cb) {
+  if (cachedReplay) {
+    cb(null, cachedReplay);
+    return;
+  }
+  socket.emit('getReplay', {}, (res) => {
+    if (!res?.ok || !res.replay) {
+      cb(res?.error || 'Could not load replay.', null);
+      return;
+    }
+    cachedReplay = res.replay;
+    cb(null, res.replay);
+  });
+}
+
+function requestReplayDownload() {
+  if (!btnDownloadReplay) return;
+  btnDownloadReplay.disabled = true;
+  if (btnViewReplay) btnViewReplay.disabled = true;
+  if (replayDownloadHint) replayDownloadHint.textContent = 'Preparing download…';
+  fetchReplay((err, replay) => {
+    if (err || !replay) {
+      if (replayDownloadHint) {
+        replayDownloadHint.textContent = err || 'Could not download replay.';
+      }
+      if (btnDownloadReplay) btnDownloadReplay.disabled = false;
+      if (btnViewReplay) btnViewReplay.disabled = false;
+      return;
+    }
+    try {
+      downloadJsonFile(replayFilename(replay, state), replay);
+      if (replayDownloadHint) {
+        replayDownloadHint.textContent =
+          'Saved. View or download again until a new game starts.';
+      }
+    } catch (e) {
+      if (replayDownloadHint) {
+        replayDownloadHint.textContent = e?.message || 'Download failed.';
+      }
+    }
+    if (btnDownloadReplay) btnDownloadReplay.disabled = false;
+    if (btnViewReplay) btnViewReplay.disabled = false;
+  });
+}
+
+function requestReplayView() {
+  if (!btnViewReplay) return;
+  btnViewReplay.disabled = true;
+  if (replayDownloadHint) replayDownloadHint.textContent = 'Loading replay…';
+  fetchReplay((err, replay) => {
+    if (err || !replay) {
+      if (replayDownloadHint) {
+        replayDownloadHint.textContent = err || 'Could not open replay.';
+      }
+      if (btnViewReplay) btnViewReplay.disabled = false;
+      return;
+    }
+    openReplayViewer(replay);
+    if (replayDownloadHint) {
+      replayDownloadHint.textContent =
+        'All five hands are shown face-up. Arrow keys or on-screen controls to step.';
+    }
+    if (btnViewReplay) btnViewReplay.disabled = false;
+    if (btnDownloadReplay) btnDownloadReplay.disabled = false;
+  });
+}
+
+function handleReplayFileSelected(file, hintEl) {
+  if (!file) return;
+  if (hintEl) hintEl.textContent = `Opening ${file.name}…`;
+  openReplayFile(file)
+    .then(() => {
+      if (hintEl) {
+        hintEl.textContent = `Loaded ${file.name}. Download again from a finished match anytime.`;
+      }
+    })
+    .catch((err) => {
+      if (hintEl) hintEl.textContent = err?.message || 'Could not open replay file.';
+      else alert(err?.message || 'Could not open replay file.');
+    })
+    .finally(() => {
+      // Allow selecting the same file again.
+      if (replayFileInput) replayFileInput.value = '';
+      if (lobbyReplayFile) lobbyReplayFile.value = '';
+    });
+}
+
 function renderRoundEndPanel(s) {
   const summary = s.roundSummary;
   const show = s.phase === 'roundEnd' && summary;
@@ -921,6 +1054,7 @@ function renderRoundEndPanel(s) {
       roundEndStandings.hidden = true;
       roundEndStandings.innerHTML = '';
     }
+    syncReplayDownload(s);
     return;
   }
 
@@ -979,6 +1113,7 @@ function renderRoundEndPanel(s) {
   }
 
   renderGameOverStandings(summary, s.mySeat);
+  syncReplayDownload(s);
 
   roundEndHands.innerHTML = '';
   // Game over: rankings are separate; only show last-hand reveal boxes (winners / ready).
@@ -1642,6 +1777,24 @@ btnNextRound.addEventListener('click', () => {
   socket.emit('nextRound', {}, (res) => {
     if (!res?.ok) alert(res?.error ?? 'Could not start next round.');
   });
+});
+
+btnDownloadReplay?.addEventListener('click', () => {
+  requestReplayDownload();
+});
+
+btnViewReplay?.addEventListener('click', () => {
+  requestReplayView();
+});
+
+replayFileInput?.addEventListener('change', () => {
+  const file = replayFileInput.files?.[0];
+  handleReplayFileSelected(file, replayDownloadHint);
+});
+
+lobbyReplayFile?.addEventListener('change', () => {
+  const file = lobbyReplayFile.files?.[0];
+  handleReplayFileSelected(file, lobbyReplayHint);
 });
 
 btnWin.addEventListener('click', () => {
