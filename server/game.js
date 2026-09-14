@@ -68,6 +68,18 @@ const PLAYER_COUNT = 5;
 const HAND_SIZE = 13;
 const DEALER_EXTRA = 1;
 
+/** Fake think-time after an unclaimable discard (anti-tell). */
+const NOBODY_CLAIM_LAG_CHANCE = 0.1;
+const NOBODY_CLAIM_LAG_MIN_MS = 1800;
+const NOBODY_CLAIM_LAG_MAX_MS = 4800;
+
+function nobodyClaimLagMs() {
+  return (
+    NOBODY_CLAIM_LAG_MIN_MS +
+    Math.floor(Math.random() * (NOBODY_CLAIM_LAG_MAX_MS - NOBODY_CLAIM_LAG_MIN_MS + 1))
+  );
+}
+
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -186,6 +198,10 @@ export class MahjongRoom {
     this.replayHand = null;
     /** @type {object | null} finished match replay available for download */
     this.completedReplay = null;
+    /** True while waiting out a fake lag after an unclaimable discard. */
+    this.pendingNobodyClaimDefer = false;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    this.nobodyClaimLagTimer = null;
   }
 
   /** Append an event to the current hand's replay log. */
@@ -828,9 +844,33 @@ export class MahjongRoom {
   }
 
   clearClaimWindow() {
+    this.clearNobodyClaimLag();
     this.claimWindow = null;
     this.claimResponded = new Set();
     this.claimSubmissions = [];
+  }
+
+  clearNobodyClaimLag() {
+    if (this.nobodyClaimLagTimer) {
+      clearTimeout(this.nobodyClaimLagTimer);
+      this.nobodyClaimLagTimer = null;
+    }
+    this.pendingNobodyClaimDefer = false;
+  }
+
+  /**
+   * Finish a deferred close after an unclaimable discard's fake lag.
+   * @returns {{ ok: boolean, closed?: boolean }}
+   */
+  finishDeferredNobodyClaimClose() {
+    if (!this.pendingNobodyClaimDefer || !this.claimWindow) {
+      this.pendingNobodyClaimDefer = false;
+      return { ok: false };
+    }
+    this.pendingNobodyClaimDefer = false;
+    this.nobodyClaimLagTimer = null;
+    const result = this.tryCloseClaimWindow();
+    return { ok: true, ...result };
   }
 
   /** Any call interrupts one-shot for every riichi player. */
@@ -1127,7 +1167,7 @@ export class MahjongRoom {
   /** Auto-pass any player who has no valid claim on the current discard */
   autoPassWithNoClaims() {
     if (!this.claimWindow) return { closed: false };
-    const { tile, fromSeat } = this.claimWindow;
+    const { fromSeat, reason } = this.claimWindow;
     let added = false;
 
     for (let s = 0; s < PLAYER_COUNT; s++) {
@@ -1140,6 +1180,24 @@ export class MahjongRoom {
     }
 
     if (!added) return { closed: false };
+
+    const responders = PLAYER_COUNT - 1;
+    const nobodyCanClaim =
+      reason === 'discard' &&
+      this.claimSubmissions.length === 0 &&
+      this.claimResponded.size >= responders;
+
+    // 10%: hold the window briefly so instant pass isn't a tell.
+    if (nobodyCanClaim && Math.random() < NOBODY_CLAIM_LAG_CHANCE) {
+      this.pendingNobodyClaimDefer = true;
+      this.message = `${this.players[fromSeat].name} discarded.`;
+      return {
+        closed: false,
+        deferCloseMs: nobodyClaimLagMs(),
+        nobodyCanClaim: true,
+      };
+    }
+
     return this.tryCloseClaimWindow();
   }
 
@@ -2293,7 +2351,12 @@ export class MahjongRoom {
       riichiDeclaration: riichiDeclarationDiscard,
     });
     if (!closed.closed) {
-      return { ok: true, tile, claimWindow: true };
+      return {
+        ok: true,
+        tile,
+        claimWindow: true,
+        deferCloseMs: closed.deferCloseMs ?? null,
+      };
     }
     return { ok: true, tile, ...closed };
   }

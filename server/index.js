@@ -88,7 +88,18 @@ io.on('connection', (socket) => {
     const room = getOrCreateRoom(roomCode);
     const result = room.discard(socket.id, tileId);
     cb?.(result);
-    if (result.ok) emitState(room);
+    if (!result.ok) return;
+    emitState(room);
+    if (result.deferCloseMs) {
+      room.clearNobodyClaimLag();
+      room.pendingNobodyClaimDefer = true;
+      room.nobodyClaimLagTimer = setTimeout(() => {
+        room.nobodyClaimLagTimer = null;
+        if (!room.pendingNobodyClaimDefer) return;
+        room.finishDeferredNobodyClaimClose();
+        emitState(room);
+      }, result.deferCloseMs);
+    }
   });
 
   socket.on('passClaim', (_, cb) => {

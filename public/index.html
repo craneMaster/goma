@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=DM+Sans:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css?v=52" />
+    <link rel="stylesheet" href="styles.css?v=54" />
   </head>
   <body>
     <div id="app">
@@ -127,9 +127,20 @@
               <span class="room-badge">Room <strong id="display-code"></strong></span>
               <span id="seat-label" class="seat-label"></span>
             </div>
-            <div id="game-length-locked" class="game-length-locked" hidden>
-              <span class="game-length-label">Game length</span>
-              <strong id="game-length-locked-value"></strong>
+            <div class="info-prefs-row">
+              <div id="game-length-locked" class="game-length-locked" hidden>
+                <span class="game-length-label">Game length</span>
+                <strong id="game-length-locked-value"></strong>
+              </div>
+              <button
+                type="button"
+                id="btn-open-calls"
+                class="btn open-calls-toggle is-on"
+                aria-pressed="true"
+                title="When off, auto-pass chi/pon/kan/kin; ron still prompts"
+              >
+                Open Calls: On
+              </button>
             </div>
             <div
               id="indicators-bar"
@@ -240,6 +251,6 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script type="module" src="app.js?v=51"></script>
+    <script type="module" src="app.js?v=56"></script>
   </body>
 </html>

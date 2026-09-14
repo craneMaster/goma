@@ -16,6 +16,62 @@ const yourDiscards = $('#your-discards');
 const claimPanel = $('#claim-panel');
 const claimButtons = $('#claim-buttons');
 const btnPass = $('#btn-pass');
+const btnOpenCalls = $('#btn-open-calls');
+const OPEN_CALLS_KEY = 'mahjong-open-calls';
+
+function loadOpenCallsEnabled() {
+  try {
+    const v = localStorage.getItem(OPEN_CALLS_KEY);
+    if (v == null) return true;
+    return v !== '0' && v !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+/** When false, auto-pass non-ron claims on others' discards. Default on. */
+let openCallsEnabled = loadOpenCallsEnabled();
+/** Prevent repeat auto-pass for the same claim window. */
+let autoSkippedClaimKey = null;
+/** Last playing-hand identity — used to force Open Calls on each new deal. */
+let lastOpenCallsHandKey = null;
+
+function persistOpenCallsEnabled() {
+  try {
+    localStorage.setItem(OPEN_CALLS_KEY, openCallsEnabled ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+function setOpenCallsEnabled(on) {
+  openCallsEnabled = !!on;
+  persistOpenCallsEnabled();
+  syncOpenCallsButton();
+}
+
+function handKeyForOpenCalls(s) {
+  if (!s || s.phase !== 'playing' || !s.round) return null;
+  return [
+    s.round.windIndex,
+    s.round.inWind,
+    s.round.repeatCount,
+    s.dealerIndex,
+  ].join('|');
+}
+
+/** Turn Open Calls on at the start of each new hand. */
+function syncOpenCallsForNewHand(s) {
+  const key = handKeyForOpenCalls(s);
+  if (!key) {
+    if (s?.phase !== 'playing') lastOpenCallsHandKey = null;
+    return;
+  }
+  if (key === lastOpenCallsHandKey) return;
+  lastOpenCallsHandKey = key;
+  if (!openCallsEnabled) setOpenCallsEnabled(true);
+  else syncOpenCallsButton();
+}
 const selfMeldPanel = $('#self-meld-panel');
 const selfMeldButtons = $('#self-meld-buttons');
 const statusMessage = $('#status-message');
@@ -642,7 +698,67 @@ function claimHighlightTileId(cw, seat) {
   return cw.tile.id;
 }
 
-function isClaimTargetDiscard(cw, seat, entry, index, list) {
+/** Claims this viewer should act on (filters non-ron when Open Calls is off). */
+function claimsForViewer(s) {
+  const claims = s?.availableClaims || [];
+  if (openCallsEnabled) return claims;
+  return claims.filter((c) => c.type === 'win');
+}
+
+/** True if this viewer still has at least one legal call on the live claim window. */
+function viewerCanClaim(s) {
+  const cw = s?.claimWindow;
+  if (!cw || s.mySeat < 0 || s.mySeat === cw.fromSeat) return false;
+  if (cw.responded?.includes(s.mySeat)) return false;
+  return claimsForViewer(s).length > 0;
+}
+
+function claimWindowKey(cw) {
+  if (!cw?.tile) return null;
+  return `${cw.fromSeat}:${cw.tile.id}:${cw.reason ?? 'discard'}`;
+}
+
+/**
+ * Open Calls off: auto-pass when the only options are non-ron calls.
+ * Ron (and pass) still prompt when available.
+ */
+function maybeAutoSkipClosedCalls(s) {
+  if (openCallsEnabled) {
+    autoSkippedClaimKey = null;
+    return;
+  }
+  const cw = s?.claimWindow;
+  if (!cw || s.phase !== 'playing') {
+    autoSkippedClaimKey = null;
+    return;
+  }
+  if (s.mySeat < 0 || s.mySeat === cw.fromSeat) return;
+  if (cw.responded?.includes(s.mySeat)) return;
+
+  const all = s.availableClaims || [];
+  if (all.length === 0) return;
+  if (all.some((c) => c.type === 'win')) return;
+
+  const key = claimWindowKey(cw);
+  if (!key || autoSkippedClaimKey === key) return;
+  autoSkippedClaimKey = key;
+  socket.emit('passClaim', {}, (res) => {
+    if (!res?.ok) autoSkippedClaimKey = null;
+  });
+}
+
+function syncOpenCallsButton() {
+  if (!btnOpenCalls) return;
+  btnOpenCalls.classList.toggle('is-on', openCallsEnabled);
+  btnOpenCalls.setAttribute('aria-pressed', openCallsEnabled ? 'true' : 'false');
+  btnOpenCalls.textContent = openCallsEnabled ? 'Open Calls: On' : 'Open Calls: Off';
+  btnOpenCalls.title = openCallsEnabled
+    ? 'Open Calls on — you will be prompted for chi/pon/kan/kin/ron'
+    : 'Open Calls off — auto-pass chi/pon/kan/kin; ron still prompts';
+}
+
+function isClaimTargetDiscard(cw, seat, entry, index, list, canClaim) {
+  if (!canClaim) return false;
   if (!cw || cw.fromSeat !== seat || cw.reason === 'chankan') return false;
   if (index !== list.length - 1) return false;
   const t = entry?.tile ?? entry;
@@ -1210,6 +1326,7 @@ function renderTable(s) {
   const positions = ['bottom', 'lr', 'ur', 'ul', 'll'];
   const cw = s.claimWindow;
   const win = roundWinInfo(s);
+  const canClaim = viewerCanClaim(s);
 
   // Preserve local seat + permanent table-center (wall / pot)
   const bottomSeat = tableEl.querySelector('.seat-bottom');
@@ -1221,7 +1338,7 @@ function renderTable(s) {
   if (centerMeta) {
     centerMeta.innerHTML = `
       <span class="center-round">五麻 · ${roundName}${s.gameLengthLabel ? ` · ${s.gameLengthLabel}` : ''}${s.inTiebreaker ? ' · tiebreaker' : ''}${s.phase === 'roundEnd' ? ' (ended)' : ''}</span>
-      ${cw ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
+      ${canClaim ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
     `;
   }
 
@@ -1276,7 +1393,9 @@ function renderTable(s) {
 
     const meldsEl = seat.querySelector('.opponent-melds');
     const meldHighlightId =
-      cw?.reason === 'chankan' ? claimHighlightTileId(cw, p.seat) : null;
+      canClaim && cw?.reason === 'chankan'
+        ? claimHighlightTileId(cw, p.seat)
+        : null;
     for (const m of p.melds || []) {
       meldsEl?.appendChild(
         renderMeldGroup(m, p.seat, mySeat, { highlightTileId: meldHighlightId })
@@ -1311,7 +1430,7 @@ function renderTable(s) {
     const discRow = seat.querySelector('.discard-row');
     if (discRow && s.phase !== 'lobby') {
       fillDiscardRow(discRow, p.discards, (entry, i, list) => ({
-        highlight: isClaimTargetDiscard(cw, p.seat, entry, i, list),
+        highlight: isClaimTargetDiscard(cw, p.seat, entry, i, list, canClaim),
       }));
     }
 
@@ -1323,7 +1442,7 @@ function renderTable(s) {
 function renderClaimPanel(s) {
   claimButtons.innerHTML = '';
   const cw = s.claimWindow;
-  const claims = s.availableClaims || [];
+  const claims = claimsForViewer(s);
   const responded = cw?.responded?.includes(s.mySeat);
 
   if (!cw || s.mySeat === cw.fromSeat || responded) {
@@ -1549,7 +1668,7 @@ function renderYourArea(s) {
 
   for (const m of me.melds || []) {
     const meldHighlightId =
-      s.claimWindow?.reason === 'chankan'
+      viewerCanClaim(s) && s.claimWindow?.reason === 'chankan'
         ? claimHighlightTileId(s.claimWindow, s.mySeat)
         : null;
     yourMelds.appendChild(
@@ -1597,8 +1716,9 @@ function renderYourArea(s) {
   for (const t of handDrawn) appendHandTile(t, true);
 
   const cw = s.claimWindow;
+  const canClaim = viewerCanClaim(s);
   fillDiscardRow(yourDiscards, me.discards, (entry, i, list) => ({
-    highlight: isClaimTargetDiscard(cw, s.mySeat, entry, i, list),
+    highlight: isClaimTargetDiscard(cw, s.mySeat, entry, i, list, canClaim),
   }));
 
   syncHostStartControls(s);
@@ -1632,8 +1752,7 @@ function renderYourArea(s) {
   renderClaimPanel(s);
   renderSelfMeldPanel(s);
 
-  const responded = cw?.responded?.includes(s.mySeat);
-  btnPass.hidden = !cw || s.mySeat === cw?.fromSeat || responded;
+  btnPass.hidden = !canClaim;
 
   syncYourAreaVisibility();
 }
@@ -1641,10 +1760,19 @@ function renderYourArea(s) {
 function applyState(s) {
   try {
     state = s;
+    syncOpenCallsForNewHand(s);
     if (s.phase === 'playing' || s.phase === 'roundEnd') {
       clearStartBusy();
     }
-    if (statusMessage) statusMessage.textContent = s.message || '';
+    maybeAutoSkipClosedCalls(s);
+    if (statusMessage) {
+      const msg = s.message || '';
+      const claimNoise =
+        s.claimWindow &&
+        !viewerCanClaim(s) &&
+        /claims?\s+open|chankan\s+open/i.test(msg);
+      statusMessage.textContent = claimNoise ? '' : msg;
+    }
     syncHostStartControls(s);
     if (wallCount) wallCount.textContent = String(s.wallRemaining ?? 0);
     const dw = s.deadWall;
@@ -1826,6 +1954,16 @@ btnPass.addEventListener('click', () => {
     if (!res?.ok) alert(res?.error ?? 'Pass failed.');
   });
 });
+
+btnOpenCalls?.addEventListener('click', () => {
+  setOpenCallsEnabled(!openCallsEnabled);
+  if (state) {
+    maybeAutoSkipClosedCalls(state);
+    applyState(state);
+  }
+});
+
+syncOpenCallsButton();
 
 function onDiscard(tileId) {
   if (!pendingDiscard) return;

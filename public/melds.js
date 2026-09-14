@@ -7,6 +7,39 @@ function view(tile, { sideways = false, faceDown = false, stackAbove = null } = 
   return { tile, sideways, faceDown, stackAbove };
 }
 
+/**
+ * Closed kan (4): ends face-down, middle two public.
+ * Closed kin (5): ends face-down, middle three public.
+ * Aka (red) 5s must sit in the public middle so everyone sees them.
+ * @param {import('../server/tiles.js').Tile[]} tiles
+ */
+function orderClosedMeldTilesForDisplay(tiles) {
+  const n = tiles?.length ?? 0;
+  if (n < 3) return tiles ?? [];
+  const reds = tiles.filter((t) => t.red);
+  const normals = tiles.filter((t) => !t.red);
+  if (reds.length === 0) return tiles;
+
+  const result = new Array(n);
+  const faceUp = [];
+  for (let i = 1; i <= n - 2; i++) faceUp.push(i);
+  let ri = 0;
+  let ni = 0;
+  for (const idx of faceUp) {
+    result[idx] = ri < reds.length ? reds[ri++] : normals[ni++];
+  }
+  for (const idx of [0, n - 1]) {
+    if (ni < normals.length) result[idx] = normals[ni++];
+    else if (ri < reds.length) result[idx] = reds[ri++];
+  }
+  // Any leftover (shouldn't happen) append to unused slots
+  for (let i = 0; i < n; i++) {
+    if (result[i] != null) continue;
+    result[i] = ni < normals.length ? normals[ni++] : reds[ri++];
+  }
+  return result;
+}
+
 function fillSideSlots(count, called, handTiles, calledSlotIndex) {
   const slots = new Array(count).fill(null);
   slots[calledSlotIndex] = called;
@@ -164,9 +197,10 @@ export function getMeldTileViews(meld, ownerSeat, playerCount = 5) {
 
   if (type === 'kan') {
     if (!open) {
-      /* calls/ankan.png — four in a row; ends face-down */
-      return tiles.map((t, i) =>
-        view(t, { faceDown: i === 0 || i === tiles.length - 1 })
+      /* calls/ankan.png — four in a row; ends face-down; aka in middle */
+      const ordered = orderClosedMeldTilesForDisplay(tiles);
+      return ordered.map((t, i) =>
+        view(t, { faceDown: i === 0 || i === ordered.length - 1 })
       );
     }
 
@@ -189,9 +223,10 @@ export function getMeldTileViews(meld, ownerSeat, playerCount = 5) {
 
   if (type === 'kin') {
     if (!open) {
-      /* calls/ankin.png — five in a row; ends face-down (ankan + middle) */
-      return tiles.map((t, i) =>
-        view(t, { faceDown: i === 0 || i === tiles.length - 1 })
+      /* calls/ankin.png — five in a row; ends face-down; aka in middle */
+      const ordered = orderClosedMeldTilesForDisplay(tiles);
+      return ordered.map((t, i) =>
+        view(t, { faceDown: i === 0 || i === ordered.length - 1 })
       );
     }
 

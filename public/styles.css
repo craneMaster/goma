@@ -1391,6 +1391,36 @@ body.replay-open {
   display: flex;
 }
 
+.info-prefs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.btn.open-calls-toggle {
+  align-self: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(232, 168, 56, 0.55);
+  background: rgba(232, 168, 56, 0.18);
+  color: #f0d090;
+  white-space: nowrap;
+}
+
+.btn.open-calls-toggle.is-on {
+  border-color: rgba(232, 168, 56, 0.75);
+  background: rgba(232, 168, 56, 0.28);
+  color: #ffe2a0;
+}
+
+.btn.open-calls-toggle:not(.is-on) {
+  border-color: rgba(197, 212, 200, 0.28);
+  background: rgba(0, 0, 0, 0.35);
+  color: #9aada0;
+}
+
 .seat-title {
   display: flex;
   flex-wrap: wrap;
