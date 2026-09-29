@@ -202,6 +202,8 @@ export class MahjongRoom {
     this.pendingNobodyClaimDefer = false;
     /** @type {ReturnType<typeof setTimeout> | null} */
     this.nobodyClaimLagTimer = null;
+    /** @type {((room: MahjongRoom) => void) | null} */
+    this.onAsyncUpdate = null;
   }
 
   /** Append an event to the current hand's replay log. */
@@ -859,6 +861,26 @@ export class MahjongRoom {
   }
 
   /**
+   * The room owns the lag timer so every discard path (manual, riichi
+   * auto-discard after a draw/pass/kan, chained lags) is released.
+   * `onAsyncUpdate` is set by the socket layer to push state to clients.
+   */
+  scheduleNobodyClaimClose(ms) {
+    this.clearNobodyClaimLag();
+    this.pendingNobodyClaimDefer = true;
+    this.nobodyClaimLagTimer = setTimeout(() => {
+      this.nobodyClaimLagTimer = null;
+      if (!this.pendingNobodyClaimDefer) return;
+      try {
+        this.finishDeferredNobodyClaimClose();
+      } catch (err) {
+        console.error('deferred claim close failed', err);
+      }
+      this.onAsyncUpdate?.(this);
+    }, ms);
+  }
+
+  /**
    * Finish a deferred close after an unclaimable discard's fake lag.
    * @returns {{ ok: boolean, closed?: boolean }}
    */
@@ -1189,11 +1211,12 @@ export class MahjongRoom {
 
     // 10%: hold the window briefly so instant pass isn't a tell.
     if (nobodyCanClaim && Math.random() < NOBODY_CLAIM_LAG_CHANCE) {
-      this.pendingNobodyClaimDefer = true;
+      const ms = nobodyClaimLagMs();
+      this.scheduleNobodyClaimClose(ms);
       this.message = `${this.players[fromSeat].name} discarded.`;
       return {
         closed: false,
-        deferCloseMs: nobodyClaimLagMs(),
+        deferCloseMs: ms,
         nobodyCanClaim: true,
       };
     }
