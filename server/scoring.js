@@ -93,12 +93,14 @@ export function scoreWin({
   isYakuman = false,
   yakuman = 1,
   honba = 0,
+  activeSeats = null,
   playerCount = 5,
 }) {
   const basic = basicPoints(han, fu, { isYakuman, yakuman });
   const deltas = Array.from({ length: playerCount }, () => 0);
   /** @type {Array<{ from: number, to: number, amount: number }>} */
   const payments = [];
+  const active = activeSeats == null ? null : new Set(activeSeats);
 
   const addPay = (from, to, amount) => {
     if (amount <= 0 || from === to) return;
@@ -106,6 +108,8 @@ export function scoreWin({
     deltas[to] += amount;
     payments.push({ from, to, amount });
   };
+
+  const canPay = (seat) => active == null || active.has(seat);
 
   const winnerIsDealer = winnerSeat === dealerIndex;
 
@@ -115,13 +119,13 @@ export function scoreWin({
     }
     const mult = winnerIsDealer ? 8 : 5;
     const amount = roundUpTo100(basic * mult) + 400 * honba;
-    addPay(fromSeat, winnerSeat, amount);
+    if (canPay(fromSeat)) addPay(fromSeat, winnerSeat, amount);
     return { basic, deltas, payments };
   }
 
   // tsumo — 4-player payment amounts
   for (let s = 0; s < playerCount; s++) {
-    if (s === winnerSeat) continue;
+    if (s === winnerSeat || !canPay(s)) continue;
     let amount;
     if (winnerIsDealer) {
       amount = roundUpTo100(2 * basic) + 100 * honba;
@@ -169,13 +173,15 @@ export function mergeScoreDeltas(scores, playerCount = 5) {
  *   notenCount: number,
  * }}
  */
-export function scoreNotenPenalty(readyFlags, playerCount = 5) {
+export function scoreNotenPenalty(readyFlags, playerCount = 5, activeSeats = null) {
   const deltas = Array.from({ length: playerCount }, () => 0);
   /** @type {Array<{ from: number, to: number, amount: number }>} */
   const payments = [];
   const ready = [];
   const noten = [];
+  const active = activeSeats == null ? null : new Set(activeSeats);
   for (let i = 0; i < playerCount; i++) {
+    if (active && !active.has(i)) continue;
     if (readyFlags[i]) ready.push(i);
     else noten.push(i);
   }
@@ -236,6 +242,7 @@ export function scoreNagashiMangan({
   winnerSeats,
   dealerIndex,
   honba = 0,
+  activeSeats = null,
   playerCount = 5,
 }) {
   const scores = winnerSeats.map((winnerSeat) =>
@@ -246,6 +253,7 @@ export function scoreNagashiMangan({
       han: 5,
       fu: 0,
       honba,
+      activeSeats,
       playerCount,
     })
   );

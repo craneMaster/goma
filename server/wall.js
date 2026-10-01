@@ -130,11 +130,13 @@ export class DeadWall {
  * @param {Tile[]} wall
  * @returns {{ liveWall: Tile[], deadWall: DeadWall }}
  */
-export function splitWall(wall) {
+export function splitWall(wall, { doraRevealed = 1 } = {}) {
   if (wall.length < DEAD_WALL_SIZE) {
     throw new Error('Not enough tiles to form a dead wall.');
   }
   const deadTiles = wall.slice(-DEAD_WALL_SIZE);
   const liveWall = wall.slice(0, -DEAD_WALL_SIZE);
-  return { liveWall, deadWall: new DeadWall(deadTiles) };
+  const deadWall = new DeadWall(deadTiles);
+  deadWall.doraRevealed = doraRevealed;
+  return { liveWall, deadWall };
 }

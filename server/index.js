@@ -84,6 +84,14 @@ io.on('connection', (socket) => {
     if (result.ok) emitState(room);
   });
 
+  socket.on('selectSwap', ({ tileIds }, cb) => {
+    if (!roomCode) return cb?.({ ok: false, error: 'Not in a room.' });
+    const room = getOrCreateRoom(roomCode);
+    const result = room.selectSwap(socket.id, tileIds);
+    cb?.(result);
+    if (result.ok) emitState(room);
+  });
+
   socket.on('discard', ({ tileId }, cb) => {
     if (!roomCode) return cb?.({ ok: false, error: 'Not in a room.' });
     const room = getOrCreateRoom(roomCode);

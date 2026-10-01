@@ -1,5 +1,5 @@
 import { tileKey } from './claims.js';
-import { canWin, canPartitionHandForMelds } from './win.js';
+import { canWin } from './win.js';
 
 /** Every distinct tile type in the 5-player deck */
 export const ALL_WAIT_KEYS = (() => {
@@ -30,14 +30,14 @@ export function isClosedHand(melds) {
  * @param {import('./tiles.js').Tile[]} hand
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  */
-export function isTenpai(hand, melds) {
+export function isTenpai(hand, melds, wildcard = null) {
   if (melds.length > 4) return false;
-  if (canWin(hand, melds)) return false;
+  if (canWin(hand, melds, null, wildcard)) return false;
 
   for (const key of ALL_WAIT_KEYS) {
     const wait = waitTile(key);
-    if (canPartitionHandForMelds([...hand, wait], melds)) return true;
-    if (canWin(hand, melds, wait)) return true;
+    if (canWin([...hand, wait], melds, null, wildcard)) return true;
+    if (canWin(hand, melds, wait, wildcard)) return true;
   }
   return false;
 }
@@ -47,10 +47,10 @@ export function isTenpai(hand, melds) {
  * @param {import('./tiles.js').Tile[]} hand
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  */
-export function isReady(hand, melds) {
-  if (canWin(hand, melds)) return true;
-  if (isTenpai(hand, melds)) return true;
-  return hasTenpaiDiscard(hand, melds);
+export function isReady(hand, melds, wildcard = null) {
+  if (canWin(hand, melds, null, wildcard)) return true;
+  if (isTenpai(hand, melds, wildcard)) return true;
+  return hasTenpaiDiscard(hand, melds, wildcard);
 }
 
 /**
@@ -60,37 +60,37 @@ export function isReady(hand, melds) {
  * @param {import('./tiles.js').Tile[]} hand
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  */
-export function hasTenpaiDiscard(hand, melds) {
+export function hasTenpaiDiscard(hand, melds, wildcard = null) {
   for (let i = 0; i < hand.length; i++) {
     const rest = hand.filter((_, j) => j !== i);
-    if (isTenpai(rest, melds)) return true;
+    if (isTenpai(rest, melds, wildcard)) return true;
   }
   return false;
 }
 
 /** Tile ids that can be discarded while staying tenpai. */
-export function tenpaiDiscardIds(hand, melds) {
+export function tenpaiDiscardIds(hand, melds, wildcard = null) {
   const ids = [];
   for (let i = 0; i < hand.length; i++) {
     const rest = hand.filter((_, j) => j !== i);
-    if (isTenpai(rest, melds)) ids.push(hand[i].id);
+    if (isTenpai(rest, melds, wildcard)) ids.push(hand[i].id);
   }
   return ids;
 }
 
-export function isTenpaiDiscard(hand, melds, tileId) {
+export function isTenpaiDiscard(hand, melds, tileId, wildcard = null) {
   const idx = hand.findIndex((t) => t.id === tileId);
   if (idx < 0) return false;
   const rest = hand.filter((_, j) => j !== idx);
-  return isTenpai(rest, melds);
+  return isTenpai(rest, melds, wildcard);
 }
 
 /** Shape wait keys for a tenpai hand (empty if already complete). */
-export function getWaitKeys(hand, melds) {
-  if (canWin(hand, melds)) return [];
+export function getWaitKeys(hand, melds, wildcard = null) {
+  if (canWin(hand, melds, null, wildcard)) return [];
   const waits = [];
   for (const key of ALL_WAIT_KEYS) {
-    if (canWin(hand, melds, waitTile(key))) waits.push(key);
+    if (canWin(hand, melds, waitTile(key), wildcard)) waits.push(key);
   }
   return waits;
 }
@@ -110,7 +110,13 @@ function sameWaitKeys(a, b) {
  * @param {string[]} tileIds tiles used for the closed kan (4) or kin (5)
  * @param {string|null} lastDrawnId id of the tile drawn this turn
  */
-export function closedKanPreservesWaits(hand, melds, tileIds, lastDrawnId = null) {
+export function closedKanPreservesWaits(
+  hand,
+  melds,
+  tileIds,
+  lastDrawnId = null,
+  wildcard = null
+) {
   const idSet = new Set(tileIds);
   const removed = hand.filter((t) => idSet.has(t.id));
   if (removed.length !== tileIds.length) return false;
@@ -120,13 +126,13 @@ export function closedKanPreservesWaits(hand, melds, tileIds, lastDrawnId = null
     beforeHand = hand.filter((t) => t.id !== lastDrawnId);
   }
 
-  const beforeWaits = getWaitKeys(beforeHand, melds);
+  const beforeWaits = getWaitKeys(beforeHand, melds, wildcard);
   if (beforeWaits.length === 0) return false;
 
   const afterHand = hand.filter((t) => !idSet.has(t.id));
   const kind = tileIds.length >= 5 ? 'kin' : 'kan';
   const afterMelds = [...melds, { type: kind, tiles: removed, open: false }];
-  const afterWaits = getWaitKeys(afterHand, afterMelds);
+  const afterWaits = getWaitKeys(afterHand, afterMelds, wildcard);
   return sameWaitKeys(beforeWaits, afterWaits);
 }
 
@@ -143,7 +149,8 @@ export function closedKinFromKanPreservesWaits(
   melds,
   meldIndex,
   tileId,
-  lastDrawnId = null
+  lastDrawnId = null,
+  wildcard = null
 ) {
   const meld = melds[meldIndex];
   if (!meld || meld.type !== 'kan' || meld.open) return false;
@@ -155,7 +162,7 @@ export function closedKinFromKanPreservesWaits(
     beforeHand = hand.filter((t) => t.id !== lastDrawnId);
   }
 
-  const beforeWaits = getWaitKeys(beforeHand, melds);
+  const beforeWaits = getWaitKeys(beforeHand, melds, wildcard);
   if (beforeWaits.length === 0) return false;
 
   const afterHand = hand.filter((t) => t.id !== tileId);
@@ -170,7 +177,7 @@ export function closedKinFromKanPreservesWaits(
         }
       : m
   );
-  const afterWaits = getWaitKeys(afterHand, afterMelds);
+  const afterWaits = getWaitKeys(afterHand, afterMelds, wildcard);
   return sameWaitKeys(beforeWaits, afterWaits);
 }
 
@@ -186,11 +193,14 @@ export function canDeclareRiichi(hand, melds, ctx) {
 
   // 13-tile tenpai (claim turn / before draw), or 14-tile with a tenpai discard
   // (including a complete winning hand — discard into tenpai / furiten).
-  if (ctx.mustDiscard && (isTenpai(hand, melds) || hasTenpaiDiscard(hand, melds))) {
+  if (
+    ctx.mustDiscard &&
+    (isTenpai(hand, melds, ctx.wildcard) || hasTenpaiDiscard(hand, melds, ctx.wildcard))
+  ) {
     return true;
   }
-  if (ctx.drewThisTurn && hasTenpaiDiscard(hand, melds)) return true;
-  if (ctx.canDraw && isTenpai(hand, melds)) return true;
+  if (ctx.drewThisTurn && hasTenpaiDiscard(hand, melds, ctx.wildcard)) return true;
+  if (ctx.canDraw && isTenpai(hand, melds, ctx.wildcard)) return true;
 
   return false;
 }

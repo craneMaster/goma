@@ -74,6 +74,9 @@ function syncOpenCallsForNewHand(s) {
 }
 const selfMeldPanel = $('#self-meld-panel');
 const selfMeldButtons = $('#self-meld-buttons');
+const swapPanel = $('#swap-panel');
+const swapStatus = $('#swap-status');
+const btnConfirmSwap = $('#btn-confirm-swap');
 const statusMessage = $('#status-message');
 const wallCount = $('#wall-count');
 const rinshanCountEl = $('#rinshan-count');
@@ -89,8 +92,10 @@ const btnNextRound = $('#btn-next-round');
 const hostStartPanel = $('#host-start-panel');
 const hostStartHint = $('#host-start-hint');
 const gameLengthSelect = $('#game-length');
+const gameModeSelect = $('#game-mode');
 const rematchSetup = $('#rematch-setup');
 const rematchGameLengthSelect = $('#rematch-game-length');
+const rematchGameModeSelect = $('#rematch-game-mode');
 const rematchSetupHint = $('#rematch-setup-hint');
 const btnRematchStart = $('#btn-rematch-start');
 const gameLengthLockedEl = $('#game-length-locked');
@@ -124,6 +129,7 @@ let cachedReplay = null;
 /** Latest server snapshot for this client (ES modules are strict — must declare). */
 let state = null;
 let pendingDiscard = false;
+let pendingSwapSelection = [];
 /** Last gameLength value we copied from the server into the length selects. */
 let syncedGameLength = null;
 
@@ -229,6 +235,17 @@ function syncGameLengthSelects(s, { force = false } = {}) {
   }
 }
 
+function syncGameModeSelects(s, { force = false } = {}) {
+  const canChoose = !!s?.canChooseGameLength;
+  const serverMode = s?.gameMode || 'standard';
+  const selects = [gameModeSelect, rematchGameModeSelect].filter(Boolean);
+  for (const sel of selects) sel.disabled = !canChoose;
+  if (!canChoose) return;
+  if (force || selects.some((sel) => sel.value !== serverMode)) {
+    for (const sel of selects) sel.value = serverMode;
+  }
+}
+
 function selectedGameLength() {
   if (
     rematchGameLengthSelect &&
@@ -238,6 +255,13 @@ function selectedGameLength() {
     return rematchGameLengthSelect.value || state?.gameLength || 'south';
   }
   return gameLengthSelect?.value || state?.gameLength || 'south';
+}
+
+function selectedGameMode() {
+  if (rematchGameModeSelect && rematchSetup && !rematchSetup.hidden) {
+    return rematchGameModeSelect.value || state?.gameMode || 'standard';
+  }
+  return gameModeSelect?.value || state?.gameMode || 'standard';
 }
 
 function syncHostStartControls(s) {
@@ -250,6 +274,7 @@ function syncHostStartControls(s) {
   setStartPanelVisible(showLobbyPanel);
   setRematchSetupVisible(showRematch);
   syncGameLengthSelects(s);
+  syncGameModeSelects(s);
 
   const title = hostStartPanel?.querySelector('.host-start-title');
   if (title) title.textContent = 'Host · Game setup';
@@ -357,6 +382,7 @@ function requestStart(ev) {
   }
 
   const gameLength = selectedGameLength();
+  const gameMode = selectedGameMode();
   startInFlight = true;
   for (const btn of document.querySelectorAll(
     '#btn-start, #btn-start-actions, #btn-rematch-start'
@@ -373,7 +399,7 @@ function requestStart(ev) {
 
   // Prefer ack; also time out so the button never sticks forever.
   let acked = false;
-  socket.emit('start', { gameLength }, (res) => {
+  socket.emit('start', { gameLength, gameMode }, (res) => {
     acked = true;
     if (!res?.ok) {
       finishFail(res?.error ?? 'Could not start.');
@@ -429,6 +455,7 @@ function tileImageSrc(tile) {
     const honorRank = { 1: 7, 2: 6, 3: 5 };
     return `/tiles/Tile-${honorRank[tile.rank]}z.png`;
   }
+  if (tile.suit === 'wild' || tile.wildcard) return '/tiles/Tile-Wild.png';
   return TILE_BACK_SRC;
 }
 
@@ -462,6 +489,7 @@ function tileLabel(tile) {
 /** Short English codes for call buttons: 1m, 2p, 3s, east, white, … */
 function tileCodeLabel(tile) {
   if (!tile) return '?';
+  if (tile.suit === 'wild' || tile.wildcard) return 'wild';
   if (tile.suit === 'man' || tile.suit === 'pin' || tile.suit === 'sou') {
     const suit = tile.suit === 'man' ? 'm' : tile.suit === 'pin' ? 'p' : 's';
     const rank = tile.red && tile.rank === 5 ? '0' : String(tile.rank);
@@ -489,6 +517,7 @@ function createTileEl(tile, opts = {}) {
     justDrawn = false,
     highlight = false,
     winTile = false,
+    ronWin = false,
     faceDown = false,
     sideways = false,
     tsumogiri = false,
@@ -501,6 +530,7 @@ function createTileEl(tile, opts = {}) {
   if (justDrawn) el.classList.add('just-drawn');
   if (highlight) el.classList.add('claimed-highlight');
   if (winTile) el.classList.add('win-tile');
+  if (ronWin) el.classList.add('ron-win-tile');
   if (sideways) el.classList.add('sideways');
   if (tsumogiri) el.classList.add('tsumogiri');
   if (tedashi) el.classList.add('tedashi');
@@ -511,6 +541,7 @@ function createTileEl(tile, opts = {}) {
   el.title = `${baseLabel}${kind}`;
 
   const img = document.createElement('img');
+  if (tile.suit === 'wild' || tile.wildcard) el.classList.add('wildcard-tile');
   img.src = faceDown ? TILE_BACK_SRC : tileImageSrc(tile);
   img.alt = baseLabel;
   img.draggable = false;
@@ -524,6 +555,7 @@ function discardOriginOpts(entry) {
     sideways: !!entry.sideways,
     tsumogiri,
     tedashi: !tsumogiri,
+    ronWin: !!entry.ronWin,
   };
 }
 
@@ -533,7 +565,7 @@ const DISCARD_ROW_COLS = 6;
 
 /** Riichi is public only after the declaration discard confirms it. */
 function riichiConfirmed(p) {
-  return !!(p?.riichi && !p.riichiFirstDiscard);
+  return !!(p?.riichi && !p.riichiFirstDiscard && p.riichiStickOnTable !== false);
 }
 
 /** Show/hide the riichi stick in front of a seat's discard river. */
@@ -584,6 +616,7 @@ function fillDiscardRow(container, entries, tileOpts = {}) {
 }
 
 function seatHeaderHtml(p, s) {
+  const wonBadge = p.won ? '<span class="won-badge">Won</span>' : '';
   const riichiBadge = riichiConfirmed(p)
     ? `<span class="riichi-badge${p.doubleRiichi ? ' double' : ''}">${
         p.doubleRiichi ? 'Double riichi' : 'Riichi'
@@ -598,12 +631,6 @@ function seatHeaderHtml(p, s) {
       ? `<span class="points">${Number(p.points).toLocaleString()}</span>`
       : '';
   const roundResult = s.roundSummary?.players?.find((r) => r.seat === p.seat);
-  const deltaBadge =
-    roundResult && roundResult.pointDelta
-      ? `<span class="point-delta ${roundResult.pointDelta > 0 ? 'plus' : 'minus'}">${
-          roundResult.pointDelta > 0 ? '+' : ''
-        }${roundResult.pointDelta}</span>`
-      : '';
   const statusBadge = roundEndStatusBadgeHtml(roundResult, s.roundSummary);
   const dealerBadge =
     s.dealerIndex === p.seat && (s.phase === 'playing' || s.phase === 'roundEnd')
@@ -612,8 +639,8 @@ function seatHeaderHtml(p, s) {
   const name = p.occupied ? escapeHtml(p.name) : 'Empty';
   return `
     <span class="wind">${windLabel(p.wind)}</span>
-    <span class="name">${name}</span>${dealerBadge}${riichiBadge}${furitenBadge}${statusBadge}
-    ${points}${deltaBadge}
+    <span class="name">${name}</span>${dealerBadge}${wonBadge}${riichiBadge}${furitenBadge}${statusBadge}
+    ${points}
   `;
 }
 
@@ -982,6 +1009,49 @@ function renderYakuBox(han) {
   return box;
 }
 
+function renderPaymentLedger(summary) {
+  const players = summary?.players || [];
+  const paidPlayers = players.filter((player) => (player.payments || []).length > 0);
+  if (!paidPlayers.length) return null;
+
+  const box = document.createElement('div');
+  box.className = 'payment-ledger';
+  const title = document.createElement('div');
+  title.className = 'payment-ledger-title';
+  title.textContent = 'Point payments';
+  box.appendChild(title);
+
+  for (const player of paidPlayers) {
+    const row = document.createElement('div');
+    row.className = 'payment-ledger-player';
+    const name = document.createElement('strong');
+    name.textContent = player.name;
+    row.appendChild(name);
+
+    const list = document.createElement('ul');
+    list.className = 'payment-ledger-list';
+    for (const payment of player.payments) {
+      const item = document.createElement('li');
+      const incoming = payment.direction === 'in';
+      item.className = incoming ? 'payment-in' : 'payment-out';
+      const amount = `${incoming ? '+' : '−'}${Number(payment.amount).toLocaleString()}`;
+      let counterparty = 'another player';
+      if (payment.type === 'riichi' || payment.type === 'riichi-pot') {
+        counterparty = 'riichi pot';
+      } else {
+        const otherSeat = incoming ? payment.fromSeat : payment.toSeat;
+        counterparty =
+          players.find((other) => other.seat === otherSeat)?.name ?? counterparty;
+      }
+      item.textContent = `${amount} ${incoming ? 'from' : 'to'} ${counterparty}`;
+      list.appendChild(item);
+    }
+    row.appendChild(list);
+    box.appendChild(row);
+  }
+  return box;
+}
+
 function renderGameOverStandings(summary, mySeat) {
   if (!roundEndStandings) return;
   const standings = summary.standings || [];
@@ -1232,6 +1302,8 @@ function renderRoundEndPanel(s) {
   syncReplayDownload(s);
 
   roundEndHands.innerHTML = '';
+  const paymentLedger = renderPaymentLedger(summary);
+  if (paymentLedger) roundEndHands.appendChild(paymentLedger);
   // Game over: rankings are separate; only show last-hand reveal boxes (winners / ready).
   const shownPlayers = summary.players.filter((pr) =>
     shouldRevealHandAtRoundEnd(s, pr.seat)
@@ -1248,13 +1320,7 @@ function renderRoundEndPanel(s) {
     header.innerHTML = `
       <span class="round-end-name">${escapeHtml(pr.name)}</span>
       <span class="round-end-wind">${windLabel(pr.wind)}</span>
-      <span class="round-end-points">${Number(pr.points ?? 0).toLocaleString()}${
-        pr.pointDelta
-          ? ` <span class="point-delta ${pr.pointDelta > 0 ? 'plus' : 'minus'}">${
-              pr.pointDelta > 0 ? '+' : ''
-            }${pr.pointDelta}</span>`
-          : ''
-      }</span>
+      <span class="round-end-points">${Number(pr.points ?? 0).toLocaleString()}</span>
       ${
         statusHtml
           ? statusHtml.replace(
@@ -1283,7 +1349,7 @@ function renderRoundEndPanel(s) {
     if (hasMelds) tilesRow.appendChild(meldsHost);
 
     const win = roundWinInfo(s);
-    const winTile = pr.won ? win?.winTile : null;
+    const winTile = pr.won ? pr.winTile ?? win?.winTile : null;
     const handRow = document.createElement('div');
     handRow.className = 'hand round-end-hand winning-hand';
     if (revealHand) {
@@ -1291,6 +1357,7 @@ function renderRoundEndPanel(s) {
         small: true,
         winMode: win?.winMode,
       });
+      if (pr.wildcard) handRow.appendChild(createTileEl(pr.wildcard, { small: true }));
     }
     tilesRow.appendChild(handRow);
     body.appendChild(tilesRow);
@@ -1337,8 +1404,8 @@ function renderTable(s) {
   const centerMeta = tableEl.querySelector('#table-center-meta');
   if (centerMeta) {
     centerMeta.innerHTML = `
-      <span class="center-round">五麻 · ${roundName}${s.gameLengthLabel ? ` · ${s.gameLengthLabel}` : ''}${s.inTiebreaker ? ' · tiebreaker' : ''}${s.phase === 'roundEnd' ? ' (ended)' : ''}</span>
-      ${canClaim ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
+      <span class="center-round">五麻 · ${roundName}${s.gameLengthLabel ? ` · ${s.gameLengthLabel}` : ''}${s.gameModeLabel && s.gameMode !== 'standard' ? ` · ${s.gameModeLabel}` : ''}${s.inTiebreaker ? ' · tiebreaker' : ''}${s.phase === 'roundEnd' ? ' (ended)' : ''}</span>
+      ${cw ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
     `;
   }
 
@@ -1413,8 +1480,13 @@ function renderTable(s) {
           small: true,
           winMode: win?.winMode,
         });
+        if (p.wildcard) backRow.appendChild(createTileEl(p.wildcard, { small: true }));
       } else {
-        for (let i = 0; i < (p.handCount || 0); i++) {
+        if (p.winningTile) {
+          backRow.appendChild(createTileEl(p.winningTile, { small: true, winTile: true }));
+        }
+        const hiddenCount = Math.max(0, (p.handCount || 0) - (p.winningTile ? 1 : 0));
+        for (let i = 0; i < hiddenCount; i++) {
           const back = createTileBackEl();
           if (p.awaitingDiscard && i === p.handCount - 1) {
             back.classList.add('just-drawn');
@@ -1586,6 +1658,39 @@ function syncYourAreaVisibility() {
   yourArea.hidden = !hasAction;
 }
 
+function syncSwapPanel(s) {
+  if (!swapPanel) return;
+  const active = s.phase === 'tile-swap';
+  swapPanel.hidden = !active;
+  if (!active) return;
+
+  const readyCount = (s.swapReadySeats || []).length;
+  const selectedCount = pendingSwapSelection.length;
+  const offset = s.swapOffset ?? '?';
+  const serverSelection = s.swapSelection || [];
+  const confirmed =
+    (s.swapReadySeats || []).includes(s.mySeat) &&
+    serverSelection.length === pendingSwapSelection.length &&
+    serverSelection.every((id) => pendingSwapSelection.includes(id));
+  if (swapStatus) {
+    swapStatus.textContent =
+      confirmed
+        ? `Swap confirmed. Pass ${3} tiles ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`
+        : selectedCount === 3
+          ? `Pass ${3} tiles ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`
+        : `Select ${3 - selectedCount} more physical tile${3 - selectedCount === 1 ? '' : 's'}; pass ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`;
+  }
+  if (btnConfirmSwap) {
+    btnConfirmSwap.disabled = selectedCount !== 3;
+    btnConfirmSwap.textContent = confirmed
+      ? 'Unconfirm'
+      : selectedCount === 3
+        ? 'Confirm 3 tiles'
+        : `Confirm (${selectedCount}/3)`;
+    btnConfirmSwap.disabled = !confirmed && selectedCount !== 3;
+  }
+}
+
 function renderYourArea(s) {
   if (yourHand) {
     yourHand.innerHTML = '';
@@ -1593,10 +1698,51 @@ function renderYourArea(s) {
   }
   if (yourMelds) yourMelds.innerHTML = '';
   if (yourDiscards) yourDiscards.innerHTML = '';
+  if (swapPanel) swapPanel.hidden = true;
   document.getElementById('game')?.classList.toggle('game-round-end', s.phase === 'roundEnd');
 
   const me = s.players.find((p) => p.isYou);
   if (!me) return;
+
+  if (s.phase === 'tile-swap') {
+    pendingSwapSelection = [...(s.swapSelection || [])];
+    for (const t of me.hand || []) {
+      const selected = pendingSwapSelection.includes(t.id);
+      const el = createTileEl(t, { selectable: true });
+      if (selected) el.classList.add('swap-selected');
+      el.addEventListener('click', () => {
+        const index = pendingSwapSelection.indexOf(t.id);
+        if (index >= 0) {
+          pendingSwapSelection.splice(index, 1);
+        } else if (pendingSwapSelection.length < 3) {
+          pendingSwapSelection.push(t.id);
+        }
+        yourHand.querySelectorAll('.tile[data-tile-id]').forEach((tileEl) => {
+          tileEl.classList.toggle(
+            'swap-selected',
+            pendingSwapSelection.includes(tileEl.dataset.tileId)
+          );
+        });
+        syncSwapPanel(s);
+      });
+      yourHand.appendChild(el);
+    }
+    if (btnConfirmSwap) btnConfirmSwap.hidden = false;
+    syncSwapPanel(s);
+    btnWin.hidden = true;
+    if (tsumoPanel) tsumoPanel.hidden = true;
+    btnRiichi.hidden = true;
+    btnUndoRiichi.hidden = true;
+    if (riichiPanel) riichiPanel.hidden = true;
+    if (btnAbortNine) btnAbortNine.hidden = true;
+    if (abortNinePanel) abortNinePanel.hidden = true;
+    claimPanel.hidden = true;
+    selfMeldPanel.hidden = true;
+    btnPass.hidden = true;
+    btnNextRound.hidden = true;
+    syncYourAreaVisibility();
+    return;
+  }
 
   if (s.phase === 'lobby') {
     // Classic lobby: seat headers (via renderTable) show names; hand stays empty.
@@ -1632,6 +1778,7 @@ function renderYourArea(s) {
         small: true,
         winMode: win?.winMode,
       });
+      if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard, { small: true }));
     } else {
       const count = me.hand?.length ?? me.handCount ?? 0;
       for (let i = 0; i < count; i++) {
@@ -1714,6 +1861,7 @@ function renderYourArea(s) {
 
   for (const t of handRest) appendHandTile(t, false);
   for (const t of handDrawn) appendHandTile(t, true);
+  if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard));
 
   const cw = s.claimWindow;
   const canClaim = viewerCanClaim(s);
@@ -1899,11 +2047,35 @@ function onGameLengthChange(ev) {
 gameLengthSelect?.addEventListener('change', onGameLengthChange);
 rematchGameLengthSelect?.addEventListener('change', onGameLengthChange);
 
+function onGameModeChange(ev) {
+  const value = ev.target?.value;
+  if (!value) return;
+  if (gameModeSelect && gameModeSelect !== ev.target) gameModeSelect.value = value;
+  if (rematchGameModeSelect && rematchGameModeSelect !== ev.target) {
+    rematchGameModeSelect.value = value;
+  }
+}
+
+gameModeSelect?.addEventListener('change', onGameModeChange);
+rematchGameModeSelect?.addEventListener('change', onGameModeChange);
+
 window.__startGame = requestStart;
 
 btnNextRound.addEventListener('click', () => {
   socket.emit('nextRound', {}, (res) => {
     if (!res?.ok) alert(res?.error ?? 'Could not start next round.');
+  });
+});
+
+btnConfirmSwap?.addEventListener('click', () => {
+  const confirmed =
+    state?.phase === 'tile-swap' &&
+    (state.swapReadySeats || []).includes(state.mySeat) &&
+    (state.swapSelection || []).length === pendingSwapSelection.length &&
+    (state.swapSelection || []).every((id) => pendingSwapSelection.includes(id));
+  if (!confirmed && pendingSwapSelection.length !== 3) return;
+  socket.emit('selectSwap', { tileIds: confirmed ? [] : [...pendingSwapSelection] }, (res) => {
+    if (!res?.ok) alert(res?.error ?? 'Could not confirm tile exchange.');
   });
 });
 

@@ -249,11 +249,12 @@ export function getClaimsForPlayer(
   discarderSeat,
   mySeat,
   playerCount = 5,
-  melds = []
+  melds = [],
+  wildcard = null
 ) {
   const claims = [];
 
-  if (canWin(hand, melds, discard)) {
+  if (canWin(hand, melds, discard, wildcard)) {
     claims.push({ type: 'win', label: 'Ron' });
   }
 

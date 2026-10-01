@@ -3,9 +3,36 @@ import { tileKey } from './claims.js';
 const NUMBERED = new Set(['man', 'pin', 'sou']);
 const WIN_TILES = 14;
 
+/** Every tile identity the Limitless Asura wildcard may represent. */
+export const WILDCARD_KEYS = (() => {
+  const keys = [];
+  for (const suit of ['man', 'pin', 'sou']) {
+    for (let rank = 1; rank <= 9; rank++) keys.push(`${suit}-${rank}`);
+  }
+  for (let rank = 1; rank <= 5; rank++) keys.push(`wind-${rank}`);
+  for (let rank = 1; rank <= 3; rank++) keys.push(`dragon-${rank}`);
+  return keys;
+})();
+
 function parseKey(key) {
   const [suit, rank] = key.split('-');
   return { suit, rank: Number(rank) };
+}
+
+function tileForKey(key) {
+  const [suit, rank] = key.split('-');
+  return {
+    id: `wildcard-as-${key}`,
+    suit,
+    rank: Number(rank),
+    copy: 5,
+    wildcardAssignment: true,
+  };
+}
+
+/** Concrete wildcard assignments for shared yaku/scoring evaluation. */
+export function wildcardAssignments(wildcard) {
+  return wildcard ? WILDCARD_KEYS.map(tileForKey) : [null];
 }
 
 /** @param {Map<string, number>} counts */
@@ -80,11 +107,9 @@ export function formatWinPatterns(patterns) {
 
 /** @param {import('./tiles.js').Tile[]} hand */
 /** @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds */
-export function hasValidWinTotal(hand, melds) {
+export function hasValidWinTotal(hand, melds, wildcard = null) {
   return (
-    isStandardWin(hand, melds) ||
-    isSevenPairs(hand, melds) ||
-    isThirteenOrphans(hand, melds)
+    getWinPatterns(hand, melds, null, wildcard).length > 0
   );
 }
 
@@ -270,9 +295,10 @@ function collectPatterns(hand, melds) {
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  * @param {import('./tiles.js').Tile} winTile
  */
-function ronSwapPatterns(hand, melds, winTile) {
+function ronSwapPatterns(hand, melds, winTile, wildcardAssigned = false) {
   const found = new Set();
-  for (let i = 0; i < hand.length; i++) {
+  const replaceable = hand.length - (wildcardAssigned ? 1 : 0);
+  for (let i = 0; i < replaceable; i++) {
     const swapped = [...hand];
     swapped[i] = winTile;
     for (const p of collectPatterns(swapped, melds)) found.add(p);
@@ -285,16 +311,32 @@ function ronSwapPatterns(hand, melds, winTile) {
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  * @param {import('./tiles.js').Tile} [winTile] — discard for ron; omit for tsumo (14 in hand)
  */
-export function getWinPatterns(hand, melds, winTile = null) {
+function getConcreteWinPatterns(hand, melds, winTile = null, wildcardAssigned = false) {
   if (!winTile) return collectPatterns(hand, melds);
 
   const added = [...hand, winTile];
   const patterns = collectPatterns(added, melds);
   if (patterns.length > 0) return patterns;
 
-  return ronSwapPatterns(hand, melds, winTile);
+  return ronSwapPatterns(hand, melds, winTile, wildcardAssigned);
 }
 
-export function canWin(hand, melds, winTile = null) {
-  return getWinPatterns(hand, melds, winTile).length > 0;
+export function getWinPatterns(hand, melds, winTile = null, wildcard = null) {
+  if (!wildcard) return getConcreteWinPatterns(hand, melds, winTile);
+  const found = new Set();
+  for (const assignment of wildcardAssignments(wildcard)) {
+    for (const pattern of getConcreteWinPatterns(
+      [...hand, assignment],
+      melds,
+      winTile,
+      true
+    )) {
+      found.add(pattern);
+    }
+  }
+  return [...found];
+}
+
+export function canWin(hand, melds, winTile = null, wildcard = null) {
+  return getWinPatterns(hand, melds, winTile, wildcard).length > 0;
 }
