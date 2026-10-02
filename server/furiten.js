@@ -16,12 +16,12 @@ function waitTile(key) {
  * @param {(winTile: object) => boolean} [isValidWin]
  * @returns {string[]}
  */
-export function getWaitKeys(hand, melds, isValidWin = null) {
-  if (canWin(hand, melds)) return [];
+export function getWaitKeys(hand, melds, isValidWin = null, wildcard = null) {
+  if (canWin(hand, melds, null, wildcard)) return [];
   const waits = [];
   for (const key of ALL_WAIT_KEYS) {
     const wait = waitTile(key);
-    if (!canWin(hand, melds, wait)) continue;
+    if (!canWin(hand, melds, wait, wildcard)) continue;
     if (isValidWin && !isValidWin(wait)) continue;
     waits.push(key);
   }
@@ -42,9 +42,10 @@ export function isDiscardFuriten(
   melds,
   discards,
   isValidWin = null,
-  furitenDiscardKeys = null
+  furitenDiscardKeys = null,
+  wildcard = null
 ) {
-  const waits = getWaitKeys(hand, melds, isValidWin);
+  const waits = getWaitKeys(hand, melds, isValidWin, wildcard);
   if (waits.length === 0) return false;
   const waitSet = new Set(waits);
   const keys =
@@ -68,21 +69,22 @@ export function isDiscardFuriten(
  * @param {object[]} melds
  * @param {(winTile: object) => boolean} [isValidWin]
  */
-export function isFuriten(player, hand, melds, isValidWin = null) {
+export function isFuriten(player, hand, melds, isValidWin = null, wildcard = null) {
   if (player.temporaryFuriten || player.riichiFuriten) return true;
   return isDiscardFuriten(
     hand,
     melds,
     player.discards ?? [],
     isValidWin,
-    player.furitenDiscardKeys ?? null
+    player.furitenDiscardKeys ?? null,
+    wildcard
   );
 }
 
 /**
  * @returns {'riichi'|'temporary'|'discard'|null}
  */
-export function furitenReason(player, hand, melds, isValidWin = null) {
+export function furitenReason(player, hand, melds, isValidWin = null, wildcard = null) {
   if (player.riichiFuriten) return 'riichi';
   if (player.temporaryFuriten) return 'temporary';
   if (
@@ -91,7 +93,8 @@ export function furitenReason(player, hand, melds, isValidWin = null) {
       melds,
       player.discards ?? [],
       isValidWin,
-      player.furitenDiscardKeys ?? null
+      player.furitenDiscardKeys ?? null,
+      wildcard
     )
   ) {
     return 'discard';

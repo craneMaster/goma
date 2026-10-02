@@ -20,11 +20,13 @@ function tileImageSrc(tile) {
     const honorRank = { 1: 7, 2: 6, 3: 5 };
     return `/tiles/Tile-${honorRank[tile.rank]}z.png`;
   }
+  if (tile.suit === 'wild' || tile.wildcard) return '/tiles/Tile-Wild.png';
   return TILE_BACK_SRC;
 }
 
 function tileCodeLabel(tile) {
   if (!tile) return '?';
+  if (tile.suit === 'wild' || tile.wildcard) return 'wild';
   if (tile.suit === 'man' || tile.suit === 'pin' || tile.suit === 'sou') {
     const suit = tile.suit === 'man' ? 'm' : tile.suit === 'pin' ? 'p' : 's';
     const rank = tile.red && tile.rank === 5 ? '0' : String(tile.rank);
@@ -55,6 +57,7 @@ function createTileEl(tile, opts = {}) {
   if (tsumogiri) el.classList.add('tsumogiri');
   if (tedashi) el.classList.add('tedashi');
   if (highlight) el.classList.add('claimed-highlight');
+  if (tile.suit === 'wild' || tile.wildcard) el.classList.add('wildcard-tile');
   el.title = tileCodeLabel(tile);
   el.dataset.tileId = tile.id;
   const img = document.createElement('img');
@@ -79,6 +82,7 @@ function appendDiscards(container, discards) {
         sideways: !!entry.sideways,
         tsumogiri: !!entry.tsumogiri,
         tedashi: !entry.tsumogiri,
+        ronWin: !!entry.ronWin,
       })
     );
   }
@@ -318,6 +322,7 @@ export function openReplayViewer(replay, opts = {}) {
           createTileEl(t, { highlight: !!(hi && t.id === hi) })
         );
       }
+      if (p.wildcard) handRow.appendChild(createTileEl(p.wildcard));
       if (!p.hand?.length) {
         const empty = document.createElement('span');
         empty.className = 'replay-empty';

@@ -1,5 +1,11 @@
 import { tileKey } from './claims.js';
-import { countsFromTiles, isSevenPairs, isThirteenOrphans } from './win.js';
+import {
+  countsFromTiles,
+  isSevenPairs,
+  isThirteenOrphans,
+  wildcardAssignments,
+} from './win.js';
+import { countDora } from './dora.js';
 import { basicPoints } from './scoring.js';
 
 const NUMBERED = new Set(['man', 'pin', 'sou']);
@@ -842,10 +848,11 @@ function summarizeYakus(yakus) {
  * @param {import('./tiles.js').Tile|null} winTile
  * @param {'ron'|'tsumo'} mode
  */
-function tileAssembliesForWin(hand, winTile, mode) {
+function tileAssembliesForWin(hand, winTile, mode, wildcardAssigned = false) {
   if (mode !== 'ron' || !winTile) return [[...hand]];
   const assemblies = [[...hand, winTile]];
-  for (let i = 0; i < hand.length; i++) {
+  const replaceable = hand.length - (wildcardAssigned ? 1 : 0);
+  for (let i = 0; i < replaceable; i++) {
     const swapped = [...hand];
     swapped[i] = winTile;
     assemblies.push(swapped);
@@ -877,8 +884,16 @@ function scoreStrength(scored, dora = 0, uraDora = 0) {
  * Yakuman beats non-yakuman; then higher basic points; then han; then fu.
  */
 function pickBetterScore(best, scored, dora = 0, uraDora = 0) {
-  const a = scoreStrength(best, dora, uraDora);
-  const b = scoreStrength(scored, dora, uraDora);
+  const a = scoreStrength(
+    best,
+    best._dora ?? dora,
+    best._scoreUraDora ?? best._uraDora ?? uraDora
+  );
+  const b = scoreStrength(
+    scored,
+    scored._dora ?? dora,
+    scored._scoreUraDora ?? scored._uraDora ?? uraDora
+  );
   if (b.yakuman !== a.yakuman) return b.yakuman > a.yakuman ? scored : best;
   if (b.points !== a.points) return b.points > a.points ? scored : best;
   if (b.han !== a.han) return b.han > a.han ? scored : best;
@@ -913,16 +928,42 @@ export function calculateHan(hand, melds, options) {
     houtei = false,
     tenhou = false,
     chiihou = false,
+    wildcard = null,
+    doraIndicators = [],
+    uraIndicators = [],
   } = options;
 
   const tsumo = mode === 'tsumo';
   const closed = handIsClosed(melds);
   const winKey = winTile ? tileKey(winTile) : null;
 
-  let best = { yakus: [], han: 0, yakuman: 0, isYakuman: false, fu: 0 };
+  let best = {
+    yakus: [],
+    han: 0,
+    yakuman: 0,
+    isYakuman: false,
+    fu: 0,
+    _dora: dora,
+    _uraDora: uraDora,
+    _scoreUraDora: uraDora,
+    wildcardTile: null,
+  };
 
-  for (const tiles of tileAssembliesForWin(hand, winTile, mode)) {
-    const ctx = {
+  for (const wildcardTile of wildcardAssignments(wildcard)) {
+    const concreteHand = wildcardTile ? [...hand, wildcardTile] : hand;
+    for (const tiles of tileAssembliesForWin(
+      concreteHand,
+      winTile,
+      mode,
+      !!wildcardTile
+    )) {
+      const candidateDora = wildcardTile
+        ? countDora(tiles, melds, null, doraIndicators, []).dora
+        : dora;
+      const candidateUraDora = wildcardTile
+        ? countDora(tiles, melds, null, [], uraIndicators).uraDora
+        : uraDora;
+      const ctx = {
       closed,
       tsumo,
       riichi,
@@ -943,59 +984,80 @@ export function calculateHan(hand, melds, options) {
       melds,
     };
 
-    if (isThirteenOrphans(tiles, melds)) {
+      if (isThirteenOrphans(tiles, melds)) {
       const summary = summarizeYakus(scoreKokushi(ctx));
-      best = pickBetterScore(
-        best,
-        {
-          ...summary,
-          fu: calculateFu(null, ctx, summary, 'kokushi'),
-        },
-        dora,
-        uraDora
-      );
-      continue;
-    }
-    if (isSevenPairs(tiles, melds)) {
-      const summary = summarizeYakus(scoreSevenPairs(ctx));
-      best = pickBetterScore(
-        best,
-        {
-          ...summary,
-          fu: calculateFu(null, ctx, summary, 'sevenPairs'),
-        },
-        dora,
-        uraDora
-      );
-      continue;
-    }
-    for (const part of findPartitions(tiles, melds)) {
-      for (const interpretation of waitInterpretations(part, ctx.winKey)) {
-        const summary = summarizeYakus(scorePartition(part, ctx, interpretation));
+      const candidate = {
+        ...summary,
+        fu: calculateFu(null, ctx, summary, 'kokushi'),
+        _dora: candidateDora,
+        _uraDora: candidateUraDora,
+        _scoreUraDora: wildcard ? 0 : candidateUraDora,
+        wildcardTile,
+      };
         best = pickBetterScore(
+        best,
+        candidate,
+        candidateDora,
+        wildcard ? 0 : candidateUraDora
+      );
+        continue;
+      }
+      if (isSevenPairs(tiles, melds)) {
+      const summary = summarizeYakus(scoreSevenPairs(ctx));
+      const candidate = {
+        ...summary,
+        fu: calculateFu(null, ctx, summary, 'sevenPairs'),
+        _dora: candidateDora,
+        _uraDora: candidateUraDora,
+        _scoreUraDora: wildcard ? 0 : candidateUraDora,
+        wildcardTile,
+      };
+        best = pickBetterScore(
+        best,
+        candidate,
+        candidateDora,
+        wildcard ? 0 : candidateUraDora
+      );
+        continue;
+      }
+      for (const part of findPartitions(tiles, melds)) {
+        for (const interpretation of waitInterpretations(part, ctx.winKey)) {
+        const summary = summarizeYakus(scorePartition(part, ctx, interpretation));
+        const candidate = {
+          ...summary,
+          fu: calculateFu(part, ctx, summary, 'standard', interpretation),
+          _dora: candidateDora,
+          _uraDora: candidateUraDora,
+          _scoreUraDora: wildcard ? 0 : candidateUraDora,
+          wildcardTile,
+        };
+          best = pickBetterScore(
           best,
-          {
-            ...summary,
-            fu: calculateFu(part, ctx, summary, 'standard', interpretation),
-          },
-          dora,
-          uraDora
-        );
+          candidate,
+          candidateDora,
+          wildcard ? 0 : candidateUraDora
+          );
+        }
       }
     }
   }
 
-  const totalHan = best.isYakuman ? best.han : best.han + dora + uraDora;
+  const selectedDora = wildcard ? best._dora : dora;
+  const selectedUraDora = wildcard ? best._uraDora : uraDora;
+  const totalHan = best.isYakuman
+    ? best.han
+    : best.han + selectedDora + selectedUraDora;
 
   return {
     yakus: best.yakus,
     han: best.han,
     yakuman: best.yakuman,
-    dora,
-    uraDora,
+    dora: selectedDora,
+    uraDora: selectedUraDora,
     totalHan,
     isYakuman: best.isYakuman,
     fu: best.fu ?? 0,
+    wildcardTile: best.wildcardTile ?? null,
   };
 }
 

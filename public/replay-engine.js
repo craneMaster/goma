@@ -25,6 +25,7 @@ function cloneDiscard(entry) {
     sideways: !!entry.sideways,
     tsumogiri: !!entry.tsumogiri,
     riichiDeclaration: !!entry.riichiDeclaration,
+    ronWin: !!entry.ronWin,
   };
 }
 
@@ -89,12 +90,16 @@ export function initialHandState(handRecord, replay) {
       seat,
       name: playerName(replay, seat),
       hand: sortHand(cloneTiles(handRecord.hands[seat])),
+      wildcard: handRecord.wildcards?.[seat] ? { ...handRecord.wildcards[seat] } : null,
       melds: [],
       discards: [],
       riichi: false,
       riichiPending: false,
       doubleRiichi: false,
       points: handRecord.points?.[seat] ?? 0,
+      active: true,
+      won: false,
+      winningTile: null,
     });
   }
   return {
@@ -125,12 +130,16 @@ function cloneState(state) {
       seat: p.seat,
       name: p.name,
       hand: cloneTiles(p.hand),
+      wildcard: p.wildcard ? { ...p.wildcard } : null,
       melds: p.melds.map(cloneMeld),
       discards: p.discards.map(cloneDiscard),
       riichi: p.riichi,
       riichiPending: p.riichiPending,
       doubleRiichi: p.doubleRiichi,
       points: p.points,
+      active: p.active,
+      won: p.won,
+      winningTile: p.winningTile ? cloneTile(p.winningTile) : null,
     })),
     lastEvent: state.lastEvent,
     caption: state.caption,
@@ -147,6 +156,7 @@ function applySummaryPlayers(state, summary) {
     if (!p) continue;
     // Always show every seat's hand in replay (ignore live-game redaction).
     p.hand = sortHand(cloneTiles(pr.hand ?? []));
+    p.wildcard = pr.wildcard ? { ...pr.wildcard } : null;
     p.melds = (pr.melds ?? []).map(cloneMeld);
     p.discards = (pr.discards ?? []).map(cloneDiscard);
     p.riichi = !!(pr.riichi ?? p.riichi);
@@ -285,6 +295,18 @@ export function applyReplayEvent(state, event, replay) {
     const names = (event.seats ?? [])
       .map((s) => next.players[s]?.name ?? `Seat ${s + 1}`)
       .join(', ');
+    for (const winnerSeat of event.seats ?? []) {
+      const winner = next.players[winnerSeat];
+      if (!winner) continue;
+      winner.active = false;
+      winner.won = true;
+      winner.winningTile = event.mode === 'tsumo' ? cloneTile(event.winTile) : null;
+    }
+    if (event.mode === 'ron' && event.fromSeat != null) {
+      const discarder = next.players[event.fromSeat];
+      const discard = discarder?.discards?.[discarder.discards.length - 1];
+      if (discard) discard.ronWin = true;
+    }
     next.caption =
       event.mode === 'ron' ? `Ron — ${names}` : `Tsumo — ${names}`;
   } else if (type === 'handEnd') {

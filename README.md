@@ -2,6 +2,8 @@
 
 Browser client for a **5-player** mahjong table with **draw** and **discard**. Built for local or LAN play with a shared room code.
 
+There is also a Limitless Asura mode selection, featuring a concealed three-tile opening exchange, one private wildcard per player, the reduced physical deal, multi-winner settlement, and wildcard-aware hand evaluation. The wildcard can represent any tile identity, including a sixth copy of a physical tile, for hand shape, waits, yaku, and scoring similar to Mahjong Soul's Limitless Asura gamemode.
+
 ## Tile set
 
 | Component | Count |
@@ -10,6 +12,10 @@ Browser client for a **5-player** mahjong table with **draw** and **discard**. B
 | Winds 东南西北**花** | 5 copies each → 25 |
 | Dragons 中发白 | 5 copies each → 15 |
 | **Total** | **175 tiles** |
+
+In Limitless Asura, each player receives one non-discardable wildcard outside the physical tile set. Since this table has five physical copies of each tile, the wildcard may represent a sixth copy.
+
+Before the wildcard is dealt, all five players secretly select three physical tiles. The server publicly announces a uniformly random pass distance from 1–4 seats clockwise, then completes the exchange. The first dora indicator is revealed only after the exchange.
 
 Seat winds: 东 · 南 · 西 · 北 · **花** (fifth wind tile, same suit as other winds).
 

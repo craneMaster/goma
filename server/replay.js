@@ -33,7 +33,7 @@ export function cloneJson(value) {
 }
 
 /**
- * @param {{ code: string, gameLength: string, gameLengthLabel: string, players: { name: string }[] }} room
+ * @param {{ code: string, gameLength: string, gameLengthLabel: string, gameMode?: string, gameModeLabel?: string, players: { name: string }[] }} room
  */
 export function createReplayDocument(room) {
   return {
@@ -43,6 +43,8 @@ export function createReplayDocument(room) {
       code: room.code,
       gameLength: room.gameLength,
       gameLengthLabel: room.gameLengthLabel,
+      gameMode: room.gameMode ?? 'standard',
+      gameModeLabel: room.gameModeLabel ?? 'Standard 五麻',
       players: room.players.map((p, seat) => ({
         seat,
         name: p.name,

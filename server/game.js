@@ -67,6 +67,27 @@ import {
 const PLAYER_COUNT = 5;
 const HAND_SIZE = 13;
 const DEALER_EXTRA = 1;
+const GAME_MODES = {
+  standard: { id: 'standard', label: 'Standard 五麻' },
+  limitlessAsura: { id: 'limitless-asura', label: 'Limitless Asura' },
+};
+
+function parseGameMode(mode) {
+  if (mode === GAME_MODES.limitlessAsura.id || mode === 'limitlessAsura') {
+    return GAME_MODES.limitlessAsura;
+  }
+  return GAME_MODES.standard;
+}
+
+function makeWildcard(seat) {
+  return {
+    id: `wildcard-${seat}`,
+    suit: 'wild',
+    rank: 0,
+    copy: 0,
+    wildcard: true,
+  };
+}
 
 /** Fake think-time after an unclaimable discard (anti-tell). */
 const NOBODY_CLAIM_LAG_CHANCE = 0.1;
@@ -94,9 +115,16 @@ function emptyPlayer(name) {
     id: null,
     name,
     hand: [],
+    /** Limitless Asura wildcard; kept outside the physical hand for now. */
+    wildcard: null,
+    active: true,
+    won: false,
+    winningTile: null,
     discards: [],
     melds: [],
     riichi: false,
+    /** Whether this hand's declared riichi stick is still visible on the table. */
+    riichiStickOnTable: false,
     riichiFirstDiscard: false,
     /** Riichi on first discard with no prior calls — 両立直. */
     doubleRiichi: false,
@@ -160,10 +188,13 @@ export class MahjongRoom {
     this.doraCount = 0;
     /** @type {number[]|null} point change from the last settled hand */
     this.lastPointDeltas = null;
+    /** Individual point transfers recorded during the current hand. */
+    this.handPayments = [];
     /** Table pot from riichi bets (1000 each). */
     this.riichiPot = 0;
     /** @type {{ seat: number, amount: number }|null} */
     this.lastRiichiPotClaim = null;
+    this.riichiPotClaims = [];
     /** @type {0|1|2|3} prevailing round wind (东→南→西→北) */
     this.roundWindIndex = 0;
     /** @type {number} hand number within round wind (1…PLAYER_COUNT) */
@@ -172,6 +203,11 @@ export class MahjongRoom {
     this.repeatCount = 0;
     /** Host-chosen match length id: east | south | west | north */
     this.gameLength = 'south';
+    this.gameMode = GAME_MODES.standard.id;
+    this.gameModeLabel = GAME_MODES.standard.label;
+    /** Tile ids selected by each player during the Asura opening exchange. */
+    this.swapSelections = Array.from({ length: PLAYER_COUNT }, () => null);
+    this.swapOffset = null;
     /** True after start until the match ends — length cannot change mid-game. */
     this.gameLengthLocked = false;
     /** Scheduled final wind from game length (unchanged by overtime). */
@@ -222,7 +258,25 @@ export class MahjongRoom {
   totalTiles(seat) {
     const p = this.players[seat];
     const inMelds = p.melds.reduce((s, m) => s + m.tiles.length, 0);
-    return p.hand.length + inMelds;
+    return p.hand.length + inMelds + (p.wildcard ? 1 : 0);
+  }
+
+  isLimitlessAsura() {
+    return this.gameMode === GAME_MODES.limitlessAsura.id;
+  }
+
+  activeSeatList() {
+    return this.players
+      .map((p, seat) => (p.active ? seat : -1))
+      .filter((seat) => seat >= 0);
+  }
+
+  nextActiveSeat(afterSeat) {
+    for (let step = 1; step <= PLAYER_COUNT; step++) {
+      const seat = (afterSeat + step) % PLAYER_COUNT;
+      if (this.players[seat]?.active) return seat;
+    }
+    return null;
   }
 
   seatForSocket(socketId) {
@@ -326,7 +380,10 @@ export class MahjongRoom {
 
     // Length is chosen at start; then locked for the match.
     const length = parseGameLength(opts.gameLength ?? this.gameLength);
+    const mode = parseGameMode(opts.gameMode ?? this.gameMode);
     this.gameLength = length.id;
+    this.gameMode = mode.id;
+    this.gameModeLabel = mode.label;
     this.scheduledFinalWindIndex = length.finalWindIndex;
     this.finalWindIndex = length.finalWindIndex;
     this.inTiebreaker = false;
@@ -342,17 +399,83 @@ export class MahjongRoom {
     }
     this.riichiPot = 0;
     this.lastRiichiPotClaim = null;
+    this.riichiPotClaims = [];
     this.completedReplay = null;
     this.replay = createReplayDocument({
       code: this.code,
       gameLength: length.id,
       gameLengthLabel: length.label,
+      gameMode: mode.id,
+      gameModeLabel: mode.label,
       players: this.players,
     });
     this.replayHand = null;
     this.dealNewHand();
     this.message = `${formatRoundName(0, 1, 0)} — ${length.label}. ${this.message}`;
     return { ok: true, gameLength: length.id };
+  }
+
+  /** Select the three concealed physical tiles used in the Asura opening exchange. */
+  selectSwap(socketId, tileIds) {
+    const seat = this.seatForSocket(socketId);
+    if (seat < 0) return { ok: false, error: 'Not in room.' };
+    if (this.phase !== 'tile-swap') {
+      return { ok: false, error: 'Tile swapping is not active.' };
+    }
+    if (Array.isArray(tileIds) && tileIds.length === 0) {
+      this.swapSelections[seat] = null;
+      return { ok: true, ready: false, phase: this.phase };
+    }
+    if (!Array.isArray(tileIds) || tileIds.length !== 3 || new Set(tileIds).size !== 3) {
+      return { ok: false, error: 'Select exactly 3 tiles.' };
+    }
+    const player = this.players[seat];
+    if (tileIds.some((id) => !player.hand.some((tile) => tile.id === id))) {
+      return { ok: false, error: 'You may only select tiles from your hand.' };
+    }
+
+    this.swapSelections[seat] = [...tileIds];
+    const ready = this.swapSelections.every((selection) => selection?.length === 3);
+    if (ready) this.completeTileSwap();
+    return { ok: true, ready, phase: this.phase };
+  }
+
+  completeTileSwap() {
+    const selections = this.swapSelections;
+    if (!selections.every((selection) => selection?.length === 3)) return false;
+
+    const offset = this.swapOffset;
+    const selectedTiles = selections.map((ids, seat) =>
+      ids.map((id) => this.players[seat].hand.find((tile) => tile.id === id))
+    );
+
+    for (let seat = 0; seat < PLAYER_COUNT; seat++) {
+      const selectedIds = new Set(selections[seat]);
+      this.players[seat].hand = this.players[seat].hand.filter(
+        (tile) => !selectedIds.has(tile.id)
+      );
+    }
+    for (let seat = 0; seat < PLAYER_COUNT; seat++) {
+      const sourceSeat = (seat - offset + PLAYER_COUNT) % PLAYER_COUNT;
+      this.players[seat].hand.push(...selectedTiles[sourceSeat]);
+      this.players[seat].hand = sortHand(this.players[seat].hand);
+      this.players[seat].wildcard = makeWildcard(seat);
+    }
+
+    this.swapOffset = offset;
+    this.deadWall.doraRevealed = 0;
+    const doraIndicator = this.deadWall.revealNextDora();
+    this.phase = 'playing';
+    this.currentTurn = this.dealerIndex;
+    this.lastDrawn = null;
+    this.lastDrawWasRinshan = false;
+    this.drewThisTurn = false;
+    this.openingDiscardPending = true;
+    const doraLabel = doraIndicator ? tileLabel(doraIndicator) : '?';
+    this.message = `${formatRoundName(this.roundWindIndex, this.roundInWind, this.repeatCount)} — Tile exchange complete. Dora indicator: ${doraLabel}. ${this.players[this.dealerIndex].name} discards first.`;
+    this.beginReplayHand();
+    this.recordReplay('tileSwap', { offset });
+    return true;
   }
 
   canNextRound(socketId) {
@@ -386,9 +509,15 @@ export class MahjongRoom {
 
     for (const p of this.players) {
       p.hand = [];
+      // In Limitless Asura the wildcard is dealt only after the opening exchange.
+      p.wildcard = null;
+      p.active = true;
+      p.won = false;
+      p.winningTile = null;
       p.discards = [];
       p.melds = [];
       p.riichi = false;
+      p.riichiStickOnTable = false;
       p.riichiFirstDiscard = false;
       p.doubleRiichi = false;
       p.riichiPendingUndo = false;
@@ -401,7 +530,9 @@ export class MahjongRoom {
       p.furitenDiscardKeys = [];
     }
 
-    for (let round = 0; round < HAND_SIZE; round++) {
+    const physicalHandSize =
+      this.gameMode === GAME_MODES.limitlessAsura.id ? HAND_SIZE - 1 : HAND_SIZE;
+    for (let round = 0; round < physicalHandSize; round++) {
       for (let s = 0; s < PLAYER_COUNT; s++) {
         this.players[s].hand.push(deck[idx++]);
       }
@@ -416,7 +547,9 @@ export class MahjongRoom {
       p.hand = sortHand(p.hand);
     }
 
-    const { liveWall, deadWall } = splitWall(deck.slice(idx));
+    const { liveWall, deadWall } = splitWall(deck.slice(idx), {
+      doraRevealed: this.isLimitlessAsura() ? 0 : 1,
+    });
     this.liveWall = liveWall;
     this.deadWall = deadWall;
     this.currentTurn = dealer;
@@ -440,25 +573,47 @@ export class MahjongRoom {
     this.doraCount = 0;
     /** @type {number[]|null} */
     this.lastPointDeltas = null;
+    this.handPayments = [];
+    this.riichiPotClaims = [];
+    this.swapSelections = Array.from({ length: PLAYER_COUNT }, () => null);
+    this.swapOffset = this.isLimitlessAsura()
+      ? 1 + Math.floor(Math.random() * 4)
+      : null;
+    if (this.isLimitlessAsura()) {
+      this.phase = 'tile-swap';
+      this.replayHand = null;
+      this.message = `Opening exchange — pass your 3 selected tiles ${this.swapOffset} seat${this.swapOffset === 1 ? '' : 's'} clockwise. Selections remain hidden.`;
+      return;
+    }
+
     this.phase = 'playing';
-    const doraTile = deadWall.revealedDoraIndicators()[0];
+    this.message = this.playingStartMessage(deadWall);
+    this.beginReplayHand();
+  }
+
+  playingStartMessage(deadWall) {
+    const doraTile = deadWall?.revealedDoraIndicators?.()[0];
     const indicatorName = doraTile ? tileLabel(doraTile) : '?';
     const roundName = formatRoundName(
       this.roundWindIndex,
       this.roundInWind,
       this.repeatCount
     );
-    this.message = `${roundName} — ${this.players[dealer].name} (${windLabel(windForSeat(dealer, dealer))}) discards first. Indicator: ${indicatorName}.`;
+    return `${roundName} — ${this.players[this.dealerIndex].name} (${windLabel(windForSeat(this.dealerIndex, this.dealerIndex))}) discards first. Indicator: ${indicatorName}.`;
+  }
 
+  beginReplayHand() {
     this.replayHand = beginHand(this.replay, {
       round: roundSnapshot(this.roundWindIndex, this.roundInWind, this.repeatCount),
-      dealerIndex: dealer,
+      dealerIndex: this.dealerIndex,
       riichiPot: this.riichiPot,
+      swapOffset: this.swapOffset,
       points: this.players.map((p) => p.points),
       hands: this.players.map((p) => cloneTiles(p.hand)),
+      wildcards: this.players.map((p) => (p.wildcard ? { ...p.wildcard } : null)),
       liveWall: cloneTiles(this.liveWall),
-      deadWall: cloneTiles(deadWall.tiles),
-      doraIndicators: cloneTiles(deadWall.revealedDoraIndicators()),
+      deadWall: cloneTiles(this.deadWall?.tiles ?? []),
+      doraIndicators: cloneTiles(this.deadWall?.revealedDoraIndicators() ?? []),
     });
   }
 
@@ -466,6 +621,9 @@ export class MahjongRoom {
     const dealer = this.dealerIndex;
     let winnerSeats =
       winners == null ? [] : Array.isArray(winners) ? [...winners] : [winners];
+    if (this.isLimitlessAsura() && endType !== 'abortive') {
+      winnerSeats = [...this.winners];
+    }
     let dealerKeeps = false;
     /** @type {number[]} */
     let nagashiSeats = [];
@@ -476,6 +634,7 @@ export class MahjongRoom {
       // Re-deal: dealer keeps, honba +1; no noten / nagashi; riichi bets stay on the table.
       dealerKeeps = true;
       this.lastPointDeltas = Array(PLAYER_COUNT).fill(0);
+      this.handPayments = [];
       this.lastRiichiPotClaim = null;
       this.winResults = [];
       this.winners = [];
@@ -486,11 +645,11 @@ export class MahjongRoom {
       this.winPatterns = [];
     } else if (endType === 'exhaustive') {
       const d = this.players[dealer];
-      dealerKeeps = isReady(d.hand, d.melds);
+      dealerKeeps = isReady(d.hand, d.melds, d.wildcard);
 
       nagashiSeats = [];
       for (let i = 0; i < PLAYER_COUNT; i++) {
-        if (this.isNagashiMangan(i)) nagashiSeats.push(i);
+        if (this.players[i].active && this.isNagashiMangan(i)) nagashiSeats.push(i);
       }
 
       this.lastRiichiPotClaim = null;
@@ -499,14 +658,20 @@ export class MahjongRoom {
         const scored = scoreNagashiMangan({
           winnerSeats: nagashiSeats,
           dealerIndex: dealer,
-          honba: this.repeatCount,
+          honba: this.isLimitlessAsura() ? 0 : this.repeatCount,
+          activeSeats: this.isLimitlessAsura() ? this.activeSeatList() : null,
           playerCount: PLAYER_COUNT,
         });
-        this.lastPointDeltas = scored.deltas;
+        this.lastPointDeltas = this.lastPointDeltas
+          ? this.lastPointDeltas.map((delta, i) => delta + scored.deltas[i])
+          : scored.deltas;
         this.winMode = 'tsumo';
-        this.winners = nagashiSeats;
-        this.winner = nagashiSeats[0];
-        this.winResults = nagashiSeats.map((seat, idx) => {
+        const priorWinners = this.isLimitlessAsura() ? [...this.winners] : [];
+        this.winners = [...priorWinners, ...nagashiSeats];
+        this.winner = this.winners[0] ?? null;
+        this.winResults = [
+          ...(this.isLimitlessAsura() ? this.winResults : []),
+          ...nagashiSeats.map((seat, idx) => {
           const seatScore = scored.scores[idx];
           return {
             seat,
@@ -519,20 +684,52 @@ export class MahjongRoom {
             pointDelta: scored.deltas[seat],
             score: seatScore,
           };
-        });
+          }),
+        ];
+        this.handPayments.push(
+          ...scored.scores.flatMap((score) =>
+            (score?.payments ?? []).map((payment) => ({
+              fromSeat: payment.fromSeat ?? payment.from,
+              toSeat: payment.toSeat ?? payment.to,
+              amount: payment.amount,
+              type: 'nagashi-mangan',
+            }))
+          )
+        );
+        winnerSeats = this.winners;
         for (let i = 0; i < PLAYER_COUNT; i++) {
           this.players[i].points += scored.deltas[i];
         }
-        winnerSeats = nagashiSeats;
       } else {
         // Noten penalty: ready +3600/a each, not-ready −3600/b each (a,b > 0).
-        const readyFlags = this.players.map((p) => isReady(p.hand, p.melds));
-        const scored = scoreNotenPenalty(readyFlags, PLAYER_COUNT);
-        this.lastPointDeltas = scored.deltas;
+        const readyFlags = this.players.map((p) => p.active && isReady(p.hand, p.melds, p.wildcard));
+        const scored = scoreNotenPenalty(
+          readyFlags,
+          PLAYER_COUNT,
+          this.isLimitlessAsura() ? this.activeSeatList() : null
+        );
+        this.handPayments.push(
+          ...(scored.payments ?? []).map((payment) => ({
+            fromSeat: payment.fromSeat ?? payment.from,
+            toSeat: payment.toSeat ?? payment.to,
+            amount: payment.amount,
+            type: 'noten-penalty',
+          }))
+        );
+        this.lastPointDeltas = this.lastPointDeltas
+          ? this.lastPointDeltas.map((delta, i) => delta + scored.deltas[i])
+          : scored.deltas;
         for (let i = 0; i < PLAYER_COUNT; i++) {
           this.players[i].points += scored.deltas[i];
         }
       }
+    }
+
+    if (this.isLimitlessAsura()) {
+      // Asura never repeats the dealer or creates honba after a win or exhaustive draw.
+      // Only an abortive draw keeps the dealer, and even then repeatCount remains zero.
+      dealerKeeps = endType === 'abortive';
+      this.repeatCount = 0;
     }
 
     const previousDealer = dealer;
@@ -547,6 +744,7 @@ export class MahjongRoom {
       PLAYER_COUNT,
       this.finalWindIndex
     );
+    if (this.isLimitlessAsura()) next.nextRepeatCount = 0;
 
     const bustedSeats = this.players
       .map((p, i) => (p.points < 0 ? i : -1))
@@ -608,17 +806,24 @@ export class MahjongRoom {
         name: p.name,
         wind: windForSeat(i, previousDealer),
         hand: [...p.hand],
+        wildcard: p.wildcard ? { ...p.wildcard } : null,
         melds: p.melds,
         discards: p.discards.map((d) => ({
-          tile: d.tile ?? d,
+          // Discards are public state; send a detached tile snapshot so
+          // later hand/meld operations cannot alter what other clients see.
+          tile: cloneTile(d.tile ?? d),
           sideways: !!d.sideways,
           tsumogiri: !!d.tsumogiri,
+          ronWin: !!d.ronWin,
         })),
-        ready: isReady(p.hand, p.melds),
+        ready: isReady(p.hand, p.melds, p.wildcard),
         won:
           (endType === 'win' && winnerSeats.includes(i)) ||
-          (endType === 'exhaustive' && nagashiSeats.includes(i)),
+          (endType === 'exhaustive' && (nagashiSeats.includes(i) || this.winners.includes(i))),
         nagashi: endType === 'exhaustive' && nagashiSeats.includes(i),
+        winMode: result?.mode ?? null,
+        winTile: result?.winTile ?? null,
+        winFromSeat: result?.fromSeat ?? null,
         patterns: result?.patterns ?? null,
         doraCount: result?.doraCount ?? 0,
         han: result?.han ?? null,
@@ -628,7 +833,12 @@ export class MahjongRoom {
         points: p.points,
         pointDelta: deltas[i] ?? 0,
         basicPoints: result?.basicPoints ?? null,
-        payments: result?.payments ?? [],
+        payments: this.handPayments
+          .filter((payment) => payment.fromSeat === i || payment.toSeat === i)
+          .map((payment) => ({
+            ...payment,
+            direction: payment.toSeat === i ? 'in' : 'out',
+          })),
         busted: p.points < 0,
       };
     });
@@ -672,7 +882,10 @@ export class MahjongRoom {
       winFromSeat: this.winFromSeat,
       winResults: this.winResults,
       pointDeltas: deltas,
+      swapOffset: this.isLimitlessAsura() ? this.swapOffset : null,
+      payments: this.handPayments,
       riichiPotClaimed: this.lastRiichiPotClaim,
+      riichiPotClaims: this.riichiPotClaims,
       riichiPot: this.riichiPot,
       roundName,
       nextRoundName,
@@ -726,12 +939,14 @@ export class MahjongRoom {
         seat,
         name: p.name,
         hand: cloneTiles(p.hand),
+        wildcard: p.wildcard ? { ...p.wildcard } : null,
         melds: cloneJson(p.melds),
         discards: p.discards.map((d) => ({
           tile: cloneTile(d.tile ?? d),
           sideways: !!d.sideways,
           tsumogiri: !!d.tsumogiri,
           riichiDeclaration: !!d.riichiDeclaration,
+          ronWin: !!d.ronWin,
         })),
         riichi: !!p.riichi,
         doubleRiichi: !!p.doubleRiichi,
@@ -804,8 +1019,10 @@ export class MahjongRoom {
         this.message = multi
           ? `${roundName} — ${names} win (ron) — ${hanText}.${pointsNote}${potNote} ${dealerNote}${gameOverNote}`
           : `${roundName} — ${names} wins (ron) — ${hanText}.${pointsNote}${potNote} ${dealerNote}${gameOverNote}`;
-      } else {
+      } else if (this.winMode === 'tsumo') {
         this.message = `${roundName} — ${names} wins (tsumo) — ${hanText}.${pointsNote}${potNote} ${dealerNote}${gameOverNote}`;
+      } else {
+        this.message = `${roundName} — ${names} win — ${hanText}.${pointsNote}${potNote} ${dealerNote}${gameOverNote}`;
       }
     } else if (endType === 'abortive') {
       const label = ABORTIVE_LABELS[this.abortiveReason] ?? 'Abortive draw';
@@ -919,13 +1136,17 @@ export class MahjongRoom {
 
   /** After a passed discard claim window — check automatic abortives. */
   checkAbortiveAfterPassedDiscard(fromSeat) {
-    if (isFiveWindAbort(this.players, this.doubleRiichiEligible)) {
+    if (
+      !this.isLimitlessAsura() &&
+      isFiveWindAbort(this.players, this.doubleRiichiEligible)
+    ) {
       return this.abortiveDraw(ABORTIVE.fiveWinds);
     }
-    if (isFiveRiichiAbort(this.players)) {
+    if (this.winners.length === 0 && isFiveRiichiAbort(this.players)) {
       return this.abortiveDraw(ABORTIVE.fiveRiichi);
     }
     if (
+      !this.isLimitlessAsura() &&
       this.pendingAbortive?.type === ABORTIVE.fiveKans &&
       this.pendingAbortive.afterSeat === fromSeat
     ) {
@@ -939,6 +1160,7 @@ export class MahjongRoom {
    * Triggers after that seat's next discard is not won.
    */
   armFiveKanAbort(seat) {
+    if (this.isLimitlessAsura()) return;
     const rinshanRemaining = this.deadWall?.rinshanRemaining() ?? 0;
     const playersWithQuads = playersWithQuadCount(this.players);
     if (isFiveKanAbort({ rinshanRemaining, playersWithQuads })) {
@@ -948,7 +1170,7 @@ export class MahjongRoom {
 
   /** First-turn nine terminals / honors — player may declare abortive draw. */
   canAbortNineTerminals(seat) {
-    if (this.phase !== 'playing' || seat < 0) return false;
+    if (this.phase !== 'playing' || seat < 0 || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
     if (!this.doubleRiichiEligible) return false;
     if (seat !== this.currentTurn) return false;
@@ -972,7 +1194,7 @@ export class MahjongRoom {
   }
 
   needsDiscard(seat) {
-    if (this.phase !== 'playing' || seat !== this.currentTurn) return false;
+    if (this.phase !== 'playing' || seat !== this.currentTurn || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
     if (this.mustDiscardAfterMeld != null && this.mustDiscardAfterMeld === seat) {
       return true;
@@ -991,7 +1213,7 @@ export class MahjongRoom {
   }
 
   canDraw(seat) {
-    if (this.phase !== 'playing' || seat !== this.currentTurn) return false;
+    if (this.phase !== 'playing' || seat !== this.currentTurn || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
     if (this.needsDiscard(seat)) return false;
     if (this.mustDiscardAfterMeld === seat) return false;
@@ -1193,7 +1415,7 @@ export class MahjongRoom {
     let added = false;
 
     for (let s = 0; s < PLAYER_COUNT; s++) {
-      if (s === fromSeat || this.claimResponded.has(s)) continue;
+      if (s === fromSeat || !this.players[s].active || this.claimResponded.has(s)) continue;
       if (this.claimsForSeat(s).length === 0) {
         this.claimResponded.add(s);
         this.recordReplay('passClaim', { seat: s, auto: true });
@@ -1243,7 +1465,7 @@ export class MahjongRoom {
     const { fromSeat } = this.claimWindow;
     let added = false;
     for (let s = 0; s < PLAYER_COUNT; s++) {
-      if (s === fromSeat || this.claimResponded.has(s)) continue;
+      if (s === fromSeat || !this.players[s].active || this.claimResponded.has(s)) continue;
       if (this.claimsForSeat(s).length === 0) {
         this.claimResponded.add(s);
         this.recordReplay('passClaim', { seat: s, auto: true });
@@ -1263,6 +1485,16 @@ export class MahjongRoom {
       this.players[fromSeat].riichiSidewaysPending = true;
     }
     return tile;
+  }
+
+  markWinningDiscard(fromSeat, winnerSeats) {
+    const discards = this.players[fromSeat]?.discards ?? [];
+    const entry = discards[discards.length - 1];
+    if (!entry) return null;
+    entry.ronWin = true;
+    entry.ronWinners = [...winnerSeats];
+    this.clearClaimWindow();
+    return entry.tile ?? entry;
   }
 
   /**
@@ -1289,6 +1521,9 @@ export class MahjongRoom {
     }
     if (this.roundSummary.endType === 'win') return !!pr.won;
     if (this.roundSummary.nagashi) return !!(pr.nagashi || pr.won);
+    if (this.isLimitlessAsura() && this.roundSummary.endType === 'exhaustive') {
+      return !!(pr.won || pr.ready);
+    }
     return !!pr.ready;
   }
 
@@ -1305,6 +1540,7 @@ export class MahjongRoom {
         return {
           ...pr,
           hand: reveal || isViewer ? pr.hand : [],
+          wildcard: reveal || isViewer ? pr.wildcard : null,
           // On a win, don't advertise ready/noten of non-winners.
           ready:
             summary.endType === 'win' && !pr.won && !isViewer ? null : pr.ready,
@@ -1317,7 +1553,8 @@ export class MahjongRoom {
     const abort = this.checkAbortiveAfterPassedDiscard(fromSeat);
     if (abort) return abort;
     this.clearClaimWindow();
-    this.currentTurn = (fromSeat + 1) % PLAYER_COUNT;
+    this.currentTurn = this.nextActiveSeat(fromSeat);
+    if (this.currentTurn == null) return { closed: true, passed: true };
     const drawResult = this.autoDrawForCurrentTurn();
     if (!drawResult?.ok && !drawResult?.roundEnded) {
       const next = this.players[this.currentTurn];
@@ -1329,7 +1566,7 @@ export class MahjongRoom {
   tryCloseClaimWindow() {
     if (!this.claimWindow) return { closed: false };
     const { tile, fromSeat, reason } = this.claimWindow;
-    const responders = PLAYER_COUNT - 1;
+    const responders = this.activeSeatList().filter((seat) => seat !== fromSeat).length;
 
     if (this.claimResponded.size < responders) return { closed: false };
 
@@ -1357,7 +1594,7 @@ export class MahjongRoom {
    * @param {'ron'|'tsumo'} mode
    * @param {import('./tiles.js').Tile|null} winTile
    */
-  hanOptionsForSeat(seat, mode, winTile = null, extra = {}) {
+  hanOptionsForSeat(seat, mode, winTile = null, extra = {}, wildcard = null) {
     const p = this.players[seat];
     const wallEmpty = this.liveWall.length === 0;
     const rinshan = mode === 'tsumo' && this.lastDrawWasRinshan;
@@ -1381,6 +1618,7 @@ export class MahjongRoom {
       houtei: mode === 'ron' && wallEmpty && !chankan,
       tenhou: this.isTenhou(seat, mode),
       chiihou: this.isChiihou(seat, mode),
+      wildcard,
     };
   }
 
@@ -1414,8 +1652,12 @@ export class MahjongRoom {
   canWinWithYaku(seat, mode, winTile = null, extra = {}) {
     const p = this.players[seat];
     const tile = mode === 'ron' ? winTile : null;
-    if (!canWin(p.hand, p.melds, tile)) return false;
-    return hasYaku(p.hand, p.melds, this.hanOptionsForSeat(seat, mode, winTile, extra));
+    if (!canWin(p.hand, p.melds, tile, p.wildcard)) return false;
+    return hasYaku(
+      p.hand,
+      p.melds,
+      this.hanOptionsForSeat(seat, mode, winTile, extra, p.wildcard)
+    );
   }
 
   /**
@@ -1424,7 +1666,12 @@ export class MahjongRoom {
   canRobKan(seat, tile) {
     if (!this.claimWindow || this.claimWindow.reason !== 'chankan') return false;
     if (this.claimWindow.kanKind === 'ankan') {
-      const patterns = getWinPatterns(this.players[seat].hand, this.players[seat].melds, tile);
+      const patterns = getWinPatterns(
+        this.players[seat].hand,
+        this.players[seat].melds,
+        tile,
+        this.players[seat].wildcard
+      );
       if (!patterns.includes('thirteenOrphans')) return false;
     }
     return this.canWinWithYaku(seat, 'ron', tile, { chankan: true });
@@ -1436,28 +1683,28 @@ export class MahjongRoom {
    */
   isSeatFuriten(seat) {
     const p = this.players[seat];
-    return isFuriten(p, p.hand, p.melds);
+    return isFuriten(p, p.hand, p.melds, null, p.wildcard);
   }
 
   seatFuritenReason(seat) {
     const p = this.players[seat];
-    return furitenReason(p, p.hand, p.melds);
+    return furitenReason(p, p.hand, p.melds, null, p.wildcard);
   }
 
   /** True if this tile completes the hand shape (yaku not required). */
   completesHandShape(seat, tile, { chankan = false, kanKind = null } = {}) {
     const p = this.players[seat];
     if (chankan && kanKind === 'ankan') {
-      return getWinPatterns(p.hand, p.melds, tile).includes('thirteenOrphans');
+      return getWinPatterns(p.hand, p.melds, tile, p.wildcard).includes('thirteenOrphans');
     }
-    return canWin(p.hand, p.melds, tile);
+    return canWin(p.hand, p.melds, tile, p.wildcard);
   }
 
   markMissedRonOpportunities(fromSeat, tile) {
     const chankan = this.claimWindow?.reason === 'chankan';
     const kanKind = this.claimWindow?.kanKind ?? null;
     for (let s = 0; s < PLAYER_COUNT; s++) {
-      if (s === fromSeat) continue;
+      if (s === fromSeat || !this.players[s].active) continue;
       const p = this.players[s];
       // Shape only: skipping because of no yaku (or declining a real win) both furiten.
       if (!this.completesHandShape(s, tile, { chankan, kanKind })) continue;
@@ -1471,16 +1718,17 @@ export class MahjongRoom {
     }
   }
 
-  /**
-   * EMA: ron on the riichi declaration discard cancels that riichi and
-   * returns the 1000-point stick to the declarer (before pot payout).
-   */
+  /** Return a riichi stick when a declaration ron invalidates the declaration. */
   cancelFailedRiichiDeclaration(fromSeat) {
     const p = this.players[fromSeat];
     if (!p?.riichi) return false;
     p.points += RIICHI_BET;
     this.riichiPot = Math.max(0, this.riichiPot - RIICHI_BET);
+    this.handPayments = this.handPayments.filter(
+      (payment) => !(payment.type === 'riichi' && payment.fromSeat === fromSeat)
+    );
     p.riichi = false;
+    p.riichiStickOnTable = false;
     p.riichiFirstDiscard = false;
     p.riichiPendingUndo = false;
     p.riichiDrewOnDeclare = false;
@@ -1500,14 +1748,11 @@ export class MahjongRoom {
     if (!results.length) return { closed: false, error: 'No winners.' };
 
     const chankan = this.claimWindow?.reason === 'chankan';
-    const failedRiichiDeclaration =
+    const declarationRon =
       mode === 'ron' &&
       !chankan &&
       !!this.claimWindow?.riichiDeclaration &&
       fromSeat != null;
-    if (failedRiichiDeclaration) {
-      this.cancelFailedRiichiDeclaration(fromSeat);
-    }
     this.clearClaimWindow();
 
     let winnerSeats = results.map((r) => r.seat);
@@ -1520,11 +1765,26 @@ export class MahjongRoom {
       results = winnerSeats.map((seat) => results.find((r) => r.seat === seat));
     }
 
-    this.winners = winnerSeats;
+    const activeSeats = new Set(this.activeSeatList());
+    const remainingAfterRon = [...activeSeats].filter(
+      (seat) => !winnerSeats.includes(seat)
+    );
+    const returnDeclarationStick =
+      declarationRon &&
+      (!this.isLimitlessAsura() ||
+        (remainingAfterRon.length === 1 && remainingAfterRon[0] === fromSeat));
+    if (returnDeclarationStick) this.cancelFailedRiichiDeclaration(fromSeat);
+
+    const declarationStickStaysInPot =
+      declarationRon && this.isLimitlessAsura() && !returnDeclarationStick;
+    const previousWinners = this.isLimitlessAsura() ? [...this.winners] : [];
+    const firstWinner = winnerSeats[0];
+    this.winners = [...previousWinners, ...winnerSeats];
     this.winner = this.winners[0];
-    this.winMode = mode;
+    const priorModes = this.winResults.map((result) => result.mode).filter(Boolean);
+    this.winMode = [...new Set([...priorModes, mode])].length > 1 ? 'multi' : mode;
     this.winPatterns = results[0].patterns;
-    this.currentTurn = this.winner;
+    this.currentTurn = firstWinner;
     this.mustDiscardAfterMeld = null;
     this.kuikaeBan = null;
 
@@ -1540,7 +1800,7 @@ export class MahjongRoom {
     }
 
     const doraIndicators = this.deadWall?.revealedDoraIndicators() ?? [];
-    const anyRiichi = this.winners.some((s) => this.players[s].riichi);
+    const anyRiichi = winnerSeats.some((s) => this.players[s].riichi);
     const uraIndicators = anyRiichi ? (this.deadWall?.revealedUraDora() ?? []) : [];
 
     const wallEmpty = this.liveWall.length === 0;
@@ -1548,7 +1808,7 @@ export class MahjongRoom {
     const haitei = mode === 'tsumo' && wallEmpty && !rinshan;
     const houtei = mode === 'ron' && wallEmpty && !chankan;
 
-    this.winResults = results.map((r) => {
+    const scoredResults = results.map((r) => {
       const player = this.players[r.seat];
       const doraCounts = countDora(
         player.hand,
@@ -1566,8 +1826,11 @@ export class MahjongRoom {
         seat: r.seat,
         dealerIndex: this.dealerIndex,
         roundWindIndex: this.roundWindIndex,
-        dora: doraCounts.dora,
-        uraDora: doraCounts.uraDora,
+        dora: player.wildcard ? 0 : doraCounts.dora,
+        uraDora: player.wildcard ? 0 : doraCounts.uraDora,
+        wildcard: player.wildcard,
+        doraIndicators,
+        uraIndicators,
         rinshan,
         chankan: mode === 'ron' && chankan,
         haitei,
@@ -1584,13 +1847,17 @@ export class MahjongRoom {
         fu: han.fu,
         isYakuman: han.isYakuman,
         yakuman: han.yakuman || 1,
-        honba: this.repeatCount,
+        honba: this.isLimitlessAsura() ? 0 : this.repeatCount,
+        activeSeats: this.isLimitlessAsura() ? activeSeats : null,
         playerCount: PLAYER_COUNT,
       });
       return {
         seat: r.seat,
+        mode,
+        winTile: mode === 'tsumo' ? this.winTile : winTile,
+        fromSeat: mode === 'ron' ? fromSeat : null,
         patterns: r.patterns,
-        doraCount: doraCounts.total,
+        doraCount: han.dora + han.uraDora,
         han,
         hanText: formatHanResult(han),
         basicPoints: scored.basic,
@@ -1599,39 +1866,106 @@ export class MahjongRoom {
         score: scored,
       };
     });
-    this.doraCount = this.winResults.reduce((sum, r) => sum + r.doraCount, 0);
+    this.doraCount = scoredResults.reduce((sum, r) => sum + r.doraCount, 0);
 
     const merged = mergeScoreDeltas(
-      this.winResults.map((r) => r.score),
+      scoredResults.map((r) => r.score),
       PLAYER_COUNT
     );
 
     // Riichi pot — head bump: closest winner to discarder (or sole tsumo winner)
-    const pot = this.riichiPot;
+    const pot = Math.max(
+      0,
+      this.riichiPot - (declarationStickStaysInPot ? RIICHI_BET : 0)
+    );
     let potSeat = null;
     if (pot > 0) {
       potSeat =
         mode === 'ron' && fromSeat != null
-          ? headBumpWinner(this.winners, fromSeat, PLAYER_COUNT)
-          : this.winners[0];
+          ? headBumpWinner(winnerSeats, fromSeat, PLAYER_COUNT)
+          : firstWinner;
       if (potSeat != null) {
         merged.deltas[potSeat] += pot;
-        this.riichiPot = 0;
+        this.riichiPot -= pot;
+
+        // A collected pot removes the visible declaration sticks. In Asura,
+        // the declaration stick that caused a ron remains visible only when
+        // it is being carried into the next winner's pot.
+        for (let seat = 0; seat < PLAYER_COUNT; seat++) {
+          if (declarationStickStaysInPot && seat === fromSeat) continue;
+          if (this.players[seat].riichi) {
+            this.players[seat].riichiStickOnTable = false;
+          }
+        }
       }
     }
+    this.handPayments.push(
+      ...scoredResults.flatMap((result) =>
+        (result.payments ?? []).map((payment) => ({
+          fromSeat: payment.fromSeat ?? payment.from,
+          toSeat: payment.toSeat ?? payment.to,
+          amount: payment.amount,
+          type: mode === 'ron' ? 'ron' : 'tsumo',
+        }))
+      )
+    );
+    if (potSeat != null && pot > 0) {
+      this.handPayments.push({
+        fromSeat: null,
+        toSeat: potSeat,
+        amount: pot,
+        type: 'riichi-pot',
+      });
+    }
     this.lastRiichiPotClaim = potSeat != null && pot > 0 ? { seat: potSeat, amount: pot } : null;
+    if (this.lastRiichiPotClaim) this.riichiPotClaims.push({ ...this.lastRiichiPotClaim });
 
-    this.lastPointDeltas = merged.deltas;
+    this.lastPointDeltas = this.lastPointDeltas
+      ? this.lastPointDeltas.map((delta, i) => delta + merged.deltas[i])
+      : merged.deltas;
     for (let i = 0; i < PLAYER_COUNT; i++) {
       this.players[i].points += merged.deltas[i];
     }
 
+    for (const seat of winnerSeats) {
+      const player = this.players[seat];
+      player.active = false;
+      player.won = true;
+      player.winningTile = mode === 'tsumo' ? this.winTile : null;
+    }
+    this.winResults = this.isLimitlessAsura()
+      ? [...this.winResults, ...scoredResults]
+      : scoredResults;
+    this.clearAllIppatsu();
+    this.invalidateDoubleRiichi();
+    this.openingDiscardPending = false;
+
     this.recordReplay('win', {
       mode,
-      seats: this.winners,
+      seats: winnerSeats,
       fromSeat: mode === 'ron' ? fromSeat : null,
       winTile: cloneTile(this.winTile),
     });
+    if (
+      this.isLimitlessAsura() &&
+      this.winners.length < PLAYER_COUNT - 1 &&
+      this.activeSeatList().length > 0
+    ) {
+      // Ron is a tile call in Limitless Asura: resume after the caller's seat,
+      // rather than continuing after the discarder as though the claim passed.
+      const afterSeat = firstWinner;
+      this.currentTurn = this.nextActiveSeat(afterSeat);
+      this.mustDiscardAfterMeld = null;
+      this.kuikaeBan = null;
+      this.drewThisTurn = false;
+      this.lastDrawn = null;
+      this.lastDrawWasRinshan = false;
+      if (this.currentTurn != null) this.autoDrawForCurrentTurn();
+      const names = winnerSeats.map((seat) => this.players[seat].name).join(', ');
+      const remaining = this.activeSeatList().length;
+      this.message = `${names} won — ${remaining} player${remaining === 1 ? '' : 's'} remain. Play continues.`;
+      return { closed: true, win: true, ongoing: true, seats: winnerSeats, seat: firstWinner };
+    }
     this.endRound('win', this.winners);
     return { closed: true, win: true, seats: this.winners, seat: this.winner };
   }
@@ -1651,7 +1985,7 @@ export class MahjongRoom {
         ? this.canRobKan(sub.seat, tile)
         : this.canWinWithYaku(sub.seat, 'ron', tile);
       if (!canWinSeat) continue;
-      const patterns = getWinPatterns(player.hand, player.melds, tile);
+      const patterns = getWinPatterns(player.hand, player.melds, tile, player.wildcard);
       if (patterns.length === 0) continue;
       if (chankan && this.claimWindow.kanKind === 'ankan') {
         if (!patterns.includes('thirteenOrphans')) continue;
@@ -1672,7 +2006,11 @@ export class MahjongRoom {
     if (chankan) {
       winTile = this.stealKanTileForChankan() ?? tile;
     } else {
-      this.removeLastDiscard(fromSeat, false);
+      if (this.isLimitlessAsura()) {
+        this.markWinningDiscard(fromSeat, results.map((r) => r.seat));
+      } else {
+        this.removeLastDiscard(fromSeat, false);
+      }
     }
     return this.finishWins(results, 'ron', fromSeat, winTile);
   }
@@ -1694,7 +2032,7 @@ export class MahjongRoom {
       if (!canWinSeat) {
         return { closed: false, error: 'Need at least one yaku to win.' };
       }
-      const patterns = getWinPatterns(player.hand, player.melds, tile);
+      const patterns = getWinPatterns(player.hand, player.melds, tile, player.wildcard);
       if (patterns.length === 0) {
         return { closed: false, error: 'Not a winning hand.' };
       }
@@ -1702,7 +2040,8 @@ export class MahjongRoom {
       if (chankan) {
         winTile = this.stealKanTileForChankan() ?? tile;
       } else {
-        this.removeLastDiscard(fromSeat, false);
+        if (this.isLimitlessAsura()) this.markWinningDiscard(fromSeat, [seat]);
+        else this.removeLastDiscard(fromSeat, false);
       }
       return this.finishWin(seat, 'ron', patterns, fromSeat, winTile);
     }
@@ -2008,7 +2347,13 @@ export class MahjongRoom {
       if (!opt) return { ok: false, error: 'Need 4 matching tiles for ankan.' };
       if (
         player.riichi &&
-        !closedKanPreservesWaits(player.hand, player.melds, opt.tileIds, this.lastDrawn)
+        !closedKanPreservesWaits(
+          player.hand,
+          player.melds,
+          opt.tileIds,
+          this.lastDrawn,
+          player.wildcard
+        )
       ) {
         return { ok: false, error: 'Riichi — closed kan must keep the same waits.' };
       }
@@ -2045,7 +2390,13 @@ export class MahjongRoom {
       if (!opt) return { ok: false, error: 'Need 5 matching tiles for kin.' };
       if (
         player.riichi &&
-        !closedKanPreservesWaits(player.hand, player.melds, opt.tileIds, this.lastDrawn)
+        !closedKanPreservesWaits(
+          player.hand,
+          player.melds,
+          opt.tileIds,
+          this.lastDrawn,
+          player.wildcard
+        )
       ) {
         return { ok: false, error: 'Riichi — closed kin must keep the same waits.' };
       }
@@ -2139,7 +2490,8 @@ export class MahjongRoom {
           player.melds,
           opt.meldIndex,
           opt.tileId,
-          this.lastDrawn
+          this.lastDrawn,
+          player.wildcard
         )
       ) {
         return { ok: false, error: 'Riichi — closed kin must keep the same waits.' };
@@ -2309,7 +2661,7 @@ export class MahjongRoom {
     const hand = p.hand;
     if (p.riichi) {
       if (p.riichiFirstDiscard) {
-        if (!isTenpaiDiscard(hand, p.melds, tileId)) {
+        if (!isTenpaiDiscard(hand, p.melds, tileId, p.wildcard)) {
           return { ok: false, error: 'Riichi — discard a tile that keeps you tenpai.' };
         }
       } else if (!this.lastDrawn || tileId !== this.lastDrawn) {
@@ -2339,6 +2691,13 @@ export class MahjongRoom {
       }
       p.points -= RIICHI_BET;
       this.riichiPot += RIICHI_BET;
+      this.handPayments.push({
+        fromSeat: seat,
+        toSeat: null,
+        amount: RIICHI_BET,
+        type: 'riichi',
+      });
+      p.riichiStickOnTable = true;
     }
     if (p.riichiSidewaysPending) p.riichiSidewaysPending = false;
     if (p.riichiFirstDiscard) p.riichiFirstDiscard = false;
@@ -2385,7 +2744,7 @@ export class MahjongRoom {
   }
 
   claimsForSeat(seat) {
-    if (!this.claimWindow || seat < 0) return [];
+    if (!this.claimWindow || seat < 0 || !this.players[seat]?.active) return [];
     const { tile, fromSeat, reason } = this.claimWindow;
     if (seat === fromSeat) return [];
     const p = this.players[seat];
@@ -2395,7 +2754,15 @@ export class MahjongRoom {
       return [{ type: 'win', label: 'Ron (chankan)' }];
     }
 
-    let claims = getClaimsForPlayer(p.hand, tile, fromSeat, seat, PLAYER_COUNT, p.melds);
+    let claims = getClaimsForPlayer(
+      p.hand,
+      tile,
+      fromSeat,
+      seat,
+      PLAYER_COUNT,
+      p.melds,
+      p.wildcard
+    );
     if (this.isSeatFuriten(seat) || !this.canWinWithYaku(seat, 'ron', tile)) {
       claims = claims.filter((c) => c.type !== 'win');
     }
@@ -2421,7 +2788,7 @@ export class MahjongRoom {
   }
 
   canRiichi(seat) {
-    if (this.phase !== 'playing' || seat !== this.currentTurn) return false;
+    if (this.phase !== 'playing' || seat !== this.currentTurn || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
     const p = this.players[seat];
     if ((p.points ?? 0) < RIICHI_BET) return false;
@@ -2432,6 +2799,7 @@ export class MahjongRoom {
       mustDiscard,
       canDraw: this.canDraw(seat),
       alreadyRiichi: p.riichi,
+      wildcard: p.wildcard,
     });
   }
 
@@ -2447,6 +2815,7 @@ export class MahjongRoom {
 
     const p = this.players[seat];
     p.riichi = true;
+    p.riichiStickOnTable = false;
     p.riichiFirstDiscard = true;
     p.riichiPendingUndo = true;
     p.riichiDrewOnDeclare = false;
@@ -2471,7 +2840,7 @@ export class MahjongRoom {
   }
 
   canUndoRiichi(seat) {
-    if (this.phase !== 'playing' || seat !== this.currentTurn) return false;
+    if (this.phase !== 'playing' || seat !== this.currentTurn || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
     const p = this.players[seat];
     return !!(p.riichi && p.riichiPendingUndo && p.riichiFirstDiscard);
@@ -2517,20 +2886,20 @@ export class MahjongRoom {
     // (Kan/kin set drewThisTurn after rinshan and may tsumo.)
     if (this.mustDiscardAfterMeld === seat && !this.drewThisTurn) return false;
     const p = this.players[seat];
-    if (!hasValidWinTotal(p.hand, p.melds)) return false;
+    if (!hasValidWinTotal(p.hand, p.melds, p.wildcard)) return false;
     return this.canWinWithYaku(seat, 'tsumo');
   }
 
   winInfoForSeat(seat) {
     if (seat < 0) return { canTsumo: false, patterns: [], needsYaku: false };
     const p = this.players[seat];
-    const patterns = getWinPatterns(p.hand, p.melds);
+    const patterns = getWinPatterns(p.hand, p.melds, null, p.wildcard);
     const afterCallNoDraw =
       this.mustDiscardAfterMeld === seat && !this.drewThisTurn;
     const shapeOk =
       !afterCallNoDraw &&
       patterns.length > 0 &&
-      hasValidWinTotal(p.hand, p.melds) &&
+      hasValidWinTotal(p.hand, p.melds, p.wildcard) &&
       this.phase === 'playing' &&
       seat === this.currentTurn &&
       !this.claimWindow;
@@ -2553,11 +2922,11 @@ export class MahjongRoom {
     }
 
     const p = this.players[seat];
-    const patterns = getWinPatterns(p.hand, p.melds);
+    const patterns = getWinPatterns(p.hand, p.melds, null, p.wildcard);
     if (patterns.length === 0) {
       return { ok: false, error: 'Hand is not a winning shape.' };
     }
-    if (!hasValidWinTotal(p.hand, p.melds)) {
+    if (!hasValidWinTotal(p.hand, p.melds, p.wildcard)) {
       return { ok: false, error: 'Need a complete tile count to win (draw first).' };
     }
     if (!this.canWinWithYaku(seat, 'tsumo')) {
@@ -2577,7 +2946,7 @@ export class MahjongRoom {
       kinKakan: [],
       kinFromAnkan: [],
     };
-    if (seat < 0 || this.claimWindow || seat !== this.currentTurn) {
+    if (seat < 0 || !this.players[seat]?.active || this.claimWindow || seat !== this.currentTurn) {
       return empty;
     }
     if (this.blockedSelfKanAfterCall(seat)) {
@@ -2599,7 +2968,8 @@ export class MahjongRoom {
             p.melds,
             o.meldIndex,
             o.tileId,
-            lastDrawn
+            lastDrawn,
+            p.wildcard
           )
         )
       : [];
@@ -2607,12 +2977,24 @@ export class MahjongRoom {
       return {
         ankan: allowKan
           ? findAnkanOptions(p.hand).filter((o) =>
-              closedKanPreservesWaits(p.hand, p.melds, o.tileIds, lastDrawn)
+              closedKanPreservesWaits(
+                p.hand,
+                p.melds,
+                o.tileIds,
+                lastDrawn,
+                p.wildcard
+              )
             )
           : [],
         kinClosed: allowKin
           ? findClosedKinOptions(p.hand).filter((o) =>
-              closedKanPreservesWaits(p.hand, p.melds, o.tileIds, lastDrawn)
+              closedKanPreservesWaits(
+                p.hand,
+                p.melds,
+                o.tileIds,
+                lastDrawn,
+                p.wildcard
+              )
             )
           : [],
         kakan: [],
@@ -2637,6 +3019,12 @@ export class MahjongRoom {
       code: this.code,
       phase: this.phase,
       message: this.message,
+      swapSelection:
+        mySeat >= 0 ? [...(this.swapSelections[mySeat] ?? [])] : [],
+      swapOffset: this.isLimitlessAsura() ? this.swapOffset : null,
+      swapReadySeats: this.swapSelections
+        .map((selection, seat) => (selection?.length === 3 ? seat : -1))
+        .filter((seat) => seat >= 0),
       dealerIndex: this.dealerIndex,
       currentTurn: this.currentTurn,
       wallRemaining: this.liveWall.length,
@@ -2652,6 +3040,8 @@ export class MahjongRoom {
       roundSummary: this.roundSummaryForSeat(mySeat),
       gameLength: this.gameLength,
       gameLengthLabel: parseGameLength(this.gameLength).label,
+      gameMode: this.gameMode,
+      gameModeLabel: this.gameModeLabel,
       gameLengthLocked: this.gameLengthLocked,
       canChooseGameLength: this.canChooseGameLength(socketId),
       finalWindIndex: this.finalWindIndex,
@@ -2701,7 +3091,8 @@ export class MahjongRoom {
         this.needsDiscard(mySeat)
           ? tenpaiDiscardIds(
               this.players[mySeat].hand,
-              this.players[mySeat].melds
+              this.players[mySeat].melds,
+              this.players[mySeat].wildcard
             )
           : [],
       winner: this.winner,
@@ -2717,19 +3108,29 @@ export class MahjongRoom {
         occupied: p.id !== null,
         isYou: p.id === socketId,
         wind: windForSeat(i, this.dealerIndex),
-        handCount: p.hand.length,
+        handCount: p.hand.length + (p.wildcard ? 1 : 0),
         meldCount: p.melds.reduce((s, m) => s + m.tiles.length, 0),
         hand:
           p.id === socketId || this.shouldRevealHandAtRoundEnd(i)
             ? p.hand
             : null,
+        wildcard:
+          p.id === socketId || this.shouldRevealHandAtRoundEnd(i)
+            ? p.wildcard
+            : null,
+        active: p.active,
+        won: p.won,
+        winningTile: p.winningTile,
         melds: p.melds.map((m, mi) => ({ ...m, ownerSeat: i, meldIndex: mi })),
         discards: p.discards.map((d) => ({
-          tile: d.tile ?? d,
+          // Keep each client's public discard state detached from the room.
+          tile: cloneTile(d.tile ?? d),
           sideways: !!d.sideways,
           tsumogiri: !!d.tsumogiri,
+          ronWin: !!d.ronWin,
         })),
         riichi: p.riichi,
+        riichiStickOnTable: !!p.riichiStickOnTable,
         /** True until the sideways declaration discard is placed. */
         riichiFirstDiscard: !!p.riichiFirstDiscard,
         doubleRiichi: !!p.doubleRiichi,

@@ -65,6 +65,13 @@
                     <option value="north">East–North (full)</option>
                   </select>
                 </label>
+                <label class="game-length-label" for="game-mode">
+                  Mode
+                  <select id="game-mode" class="game-length-select">
+                    <option value="standard" selected>Standard 五麻</option>
+                    <option value="limitless-asura">Limitless Asura</option>
+                  </select>
+                </label>
                 <button
                   type="button"
                   id="btn-start"
@@ -158,6 +165,15 @@
           </aside>
 
           <div class="calls-dock" aria-label="Tile calls">
+            <div id="swap-panel" class="swap-panel" hidden>
+              <p class="claim-title">Opening tile exchange</p>
+              <p id="swap-status" class="swap-status">
+                Select 3 physical tiles to pass. Your selection stays hidden.
+              </p>
+              <button type="button" id="btn-confirm-swap" class="btn primary" disabled>
+                Confirm 3 tiles
+              </button>
+            </div>
             <div id="claim-panel" class="claim-panel" hidden>
               <p class="claim-title">Claim on discard</p>
               <div id="claim-buttons" class="claim-buttons"></div>
@@ -196,6 +212,13 @@
                   <option value="south" selected>East–South</option>
                   <option value="west">East–West</option>
                   <option value="north">East–North (full)</option>
+                </select>
+              </label>
+              <label class="game-length-label" for="rematch-game-mode">
+                Mode
+                <select id="rematch-game-mode" class="game-length-select">
+                  <option value="standard" selected>Standard 五麻</option>
+                  <option value="limitless-asura">Limitless Asura</option>
                 </select>
               </label>
               <button
@@ -251,6 +274,6 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script type="module" src="app.js?v=56"></script>
+    <script type="module" src="app.js?v=52"></script>
   </body>
 </html>
