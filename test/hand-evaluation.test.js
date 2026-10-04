@@ -5,7 +5,7 @@ import { buildDeck } from '../server/tiles.js';
 import { countDora } from '../server/dora.js';
 import { scoreWin } from '../server/scoring.js';
 import { calculateHan } from '../server/yaku.js';
-import { getWaitKeys } from '../server/riichi.js';
+import { getWaitKeys, isTenpai } from '../server/riichi.js';
 import { canWin, getWinPatterns } from '../server/win.js';
 import { MahjongRoom } from '../server/game.js';
 import { computeNextRoundState } from '../server/round.js';
@@ -457,6 +457,36 @@ test('wildcard can act as a sixth copy of a tile', () => {
   ]);
 
   assert.equal(canWin(handWithFiveOnes, [], tile('man', 1, 4), wildcard), true);
+});
+
+test('Asura ready hands follow the 12-tile shape rules', () => {
+  const k = (spec) =>
+    hand(
+      spec.split(' ').map((s, i) => {
+        const suit = { m: 'man', p: 'pin', s: 'sou', w: 'wind', d: 'dragon' }[s[1]];
+        return [suit, Number(s[0]), i % 5];
+      })
+    );
+  const ready = (spec) => isTenpai(k(spec), [], wildcard);
+  const allKeys = getWaitKeys(k('1m 2m 3m 4p 5p 6p 7s 8s 9s 1w 1w 1w'), [], wildcard);
+
+  // Four melds & a pair.
+  assert.equal(ready('1m 2m 3m 4p 5p 6p 1s 2s 7s 8s 1w 1w'), true); // 2 melds, 2 partial, pair
+  assert.equal(ready('1m 2m 3m 4p 5p 6p 7s 8s 9s 5s 1w 1w'), true); // 3 melds, lone, pair
+  assert.equal(ready('1m 2m 3m 4p 5p 6p 7s 8s 9s 1s 3s 1w'), true); // 3 melds, partial, lone
+  assert.equal(ready('1m 2m 3m 4p 5p 6p 7s 8s 9s 1w 1w 1w'), true); // 4 melds
+  assert.equal(allKeys.length, 35);
+  assert.equal(ready('1m 4m 7m 2p 5p 8p 3s 6s 9s 1w 2w 3w'), false);
+
+  // Seven pairs.
+  assert.equal(ready('1m 1m 3m 3m 5p 5p 7p 7p 9s 9s 1w 2w'), true); // 5 pairs, 2 lone
+  assert.equal(ready('1m 1m 3m 3m 5p 5p 7p 7p 9s 9s 1w 1w'), true); // 6 pairs
+  assert.equal(ready('1m 1m 1m 1m 5p 5p 7p 7p 9s 9s 1w 2w'), false); // pairs must be distinct
+
+  // Thirteen orphans.
+  assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 1d'), true); // 11 distinct, one pair
+  assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 2d'), true); // 12 distinct
+  assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 5m'), false);
 });
 
 test('wildcard itself is not counted as a red tile', () => {

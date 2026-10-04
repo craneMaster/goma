@@ -321,20 +321,162 @@ function getConcreteWinPatterns(hand, melds, winTile = null, wildcardAssigned = 
   return ronSwapPatterns(hand, melds, winTile, wildcardAssigned);
 }
 
-export function getWinPatterns(hand, melds, winTile = null, wildcard = null) {
-  if (!wildcard) return getConcreteWinPatterns(hand, melds, winTile);
-  const found = new Set();
-  for (const assignment of wildcardAssignments(wildcard)) {
-    for (const pattern of getConcreteWinPatterns(
-      [...hand, assignment],
-      melds,
-      winTile,
-      true
-    )) {
-      found.add(pattern);
+/*
+ * Joker evaluation: a wildcard (or an unknown wait tile) may stand for any
+ * tile identity, including a sixth copy, so it fills any missing slot.
+ * Counts are indexed by WILDCARD_KEYS; numbered suits occupy 0–26.
+ */
+const KEY_INDEX = new Map(WILDCARD_KEYS.map((k, i) => [k, i]));
+const ORPHAN_INDEX_SET = new Set(ORPHAN_KEYS.map((k) => KEY_INDEX.get(k)));
+const NUMBERED_KEY_COUNT = 27;
+
+function countArray(tiles) {
+  const c = new Array(WILDCARD_KEYS.length).fill(0);
+  for (const t of tiles) {
+    const i = KEY_INDEX.get(tileKey(t));
+    if (i == null) return null;
+    c[i]++;
+  }
+  return c;
+}
+
+function firstNonZero(c) {
+  for (let i = 0; i < c.length; i++) if (c[i] > 0) return i;
+  return -1;
+}
+
+/** Use every physical tile and exactly `jokers` jokers in `groups` sets. */
+function jokerGroups(c, groups, jokers) {
+  const i = firstNonZero(c);
+  if (i < 0) return jokers === groups * 3;
+  if (groups === 0) return false;
+  const n = c[i];
+
+  for (const size of [5, 4, 3]) {
+    for (let k = Math.min(n, size); k >= 1; k--) {
+      const need = size - k;
+      if (need > jokers) continue;
+      c[i] -= k;
+      const ok = jokerGroups(c, groups - 1, jokers - need);
+      c[i] += k;
+      if (ok) return true;
     }
   }
+
+  if (i < NUMBERED_KEY_COUNT) {
+    const suitStart = i - (i % 9);
+    // `i` is the lowest physical tile, so lower sequence slots must be jokers.
+    for (let s = Math.max(suitStart, i - 2); s <= i && s + 2 < suitStart + 9; s++) {
+      let need = 0;
+      const used = [];
+      for (let x = s; x <= s + 2; x++) {
+        if (x !== i && c[x] > 0 && x > i) used.push(x);
+        else if (x !== i) need++;
+      }
+      if (need > jokers) continue;
+      c[i]--;
+      for (const x of used) c[x]--;
+      const ok = jokerGroups(c, groups - 1, jokers - need);
+      c[i]++;
+      for (const x of used) c[x]++;
+      if (ok) return true;
+    }
+  }
+  return false;
+}
+
+function jokerStandard(c, melds, jokers) {
+  if (melds.length > 4) return false;
+  const groups = groupsNeededFromMelds(melds);
+  if (jokers >= 2 && jokerGroups(c, groups, jokers - 2)) return true;
+  for (let i = 0; i < c.length; i++) {
+    if (c[i] === 0) continue;
+    const take = Math.min(c[i], 2);
+    const need = 2 - take;
+    if (need > jokers) continue;
+    c[i] -= take;
+    const ok = jokerGroups(c, groups, jokers - need);
+    c[i] += take;
+    if (ok) return true;
+  }
+  return false;
+}
+
+function jokerSevenPairs(c, melds, jokers, physical) {
+  if (melds.length > 0 || physical + jokers !== WIN_TILES) return false;
+  let singles = 0;
+  for (const n of c) {
+    if (n > 2) return false;
+    if (n === 1) singles++;
+  }
+  return singles <= jokers && (jokers - singles) % 2 === 0;
+}
+
+function jokerThirteenOrphans(c, melds, jokers, physical) {
+  if (melds.length > 0 || physical + jokers !== WIN_TILES) return false;
+  let pairs = 0;
+  for (let i = 0; i < c.length; i++) {
+    if (c[i] === 0) continue;
+    if (!ORPHAN_INDEX_SET.has(i) || c[i] > 2) return false;
+    if (c[i] === 2) pairs++;
+  }
+  return pairs === 1 || (pairs === 0 && jokers >= 1);
+}
+
+function jokerPatterns(tiles, melds, jokers) {
+  const c = countArray(tiles);
+  if (!c) return [];
+  const patterns = [];
+  if (jokerStandard(c, melds, jokers)) patterns.push('standard');
+  if (jokerSevenPairs(c, melds, jokers, tiles.length)) patterns.push('sevenPairs');
+  if (jokerThirteenOrphans(c, melds, jokers, tiles.length)) {
+    patterns.push('thirteenOrphans');
+  }
+  return patterns;
+}
+
+/** Each distinct tile identity once — removals of identical tiles are equivalent. */
+function distinctIndexes(hand) {
+  const seen = new Set();
+  const idx = [];
+  hand.forEach((t, i) => {
+    const k = tileKey(t);
+    if (seen.has(k)) return;
+    seen.add(k);
+    idx.push(i);
+  });
+  return idx;
+}
+
+function wildcardWinPatterns(hand, melds, winTile) {
+  if (!winTile) return jokerPatterns(hand, melds, 1);
+  const direct = jokerPatterns([...hand, winTile], melds, 1);
+  if (direct.length > 0) return direct;
+  const found = new Set();
+  for (const i of distinctIndexes(hand)) {
+    const swapped = [...hand];
+    swapped[i] = winTile;
+    for (const p of jokerPatterns(swapped, melds, 1)) found.add(p);
+  }
   return [...found];
+}
+
+/**
+ * Limitless Asura ready hand: the physical tiles plus two jokers (the
+ * wildcard and the awaited tile) complete four melds & a pair, seven
+ * distinct pairs, or thirteen orphans. With 12 physical tiles:
+ * - standard: 2 melds + 2 incomplete melds + pair; 3 melds + lone tile + pair;
+ *   3 melds + incomplete meld + lone tile; 4 melds (waits on everything)
+ * - seven pairs: 5 pairs + 2 distinct lone tiles; 6 pairs (waits on everything)
+ * - thirteen orphans: 11 distinct orphans with one paired; 12 distinct orphans
+ */
+export function isWildcardReadyShape(hand, melds) {
+  return jokerPatterns(hand, melds, 2).length > 0;
+}
+
+export function getWinPatterns(hand, melds, winTile = null, wildcard = null) {
+  if (!wildcard) return getConcreteWinPatterns(hand, melds, winTile);
+  return wildcardWinPatterns(hand, melds, winTile);
 }
 
 export function canWin(hand, melds, winTile = null, wildcard = null) {

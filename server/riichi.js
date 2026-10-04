@@ -1,5 +1,5 @@
 import { tileKey } from './claims.js';
-import { canWin } from './win.js';
+import { canWin, isWildcardReadyShape } from './win.js';
 
 /** Every distinct tile type in the 5-player deck */
 export const ALL_WAIT_KEYS = (() => {
@@ -34,6 +34,20 @@ export function isTenpai(hand, melds, wildcard = null) {
   if (melds.length > 4) return false;
   if (canWin(hand, melds, null, wildcard)) return false;
 
+  if (wildcard) {
+    // The awaited tile is itself a joker: ready iff hand + 2 jokers completes.
+    // The swap form mirrors ron on an over-full hand (e.g. after an open kan).
+    if (isWildcardReadyShape(hand, melds)) return true;
+    const seen = new Set();
+    for (let i = 0; i < hand.length; i++) {
+      const k = tileKey(hand[i]);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (isWildcardReadyShape(hand.filter((_, j) => j !== i), melds)) return true;
+    }
+    return false;
+  }
+
   for (const key of ALL_WAIT_KEYS) {
     const wait = waitTile(key);
     if (canWin([...hand, wait], melds, null, wildcard)) return true;
@@ -61,7 +75,11 @@ export function isReady(hand, melds, wildcard = null) {
  * @param {Array<{ tiles: import('./tiles.js').Tile[] }>} melds
  */
 export function hasTenpaiDiscard(hand, melds, wildcard = null) {
+  const seen = new Set();
   for (let i = 0; i < hand.length; i++) {
+    const k = tileKey(hand[i]);
+    if (seen.has(k)) continue;
+    seen.add(k);
     const rest = hand.filter((_, j) => j !== i);
     if (isTenpai(rest, melds, wildcard)) return true;
   }
@@ -70,10 +88,15 @@ export function hasTenpaiDiscard(hand, melds, wildcard = null) {
 
 /** Tile ids that can be discarded while staying tenpai. */
 export function tenpaiDiscardIds(hand, melds, wildcard = null) {
+  const byKey = new Map();
   const ids = [];
   for (let i = 0; i < hand.length; i++) {
-    const rest = hand.filter((_, j) => j !== i);
-    if (isTenpai(rest, melds, wildcard)) ids.push(hand[i].id);
+    const k = tileKey(hand[i]);
+    if (!byKey.has(k)) {
+      const rest = hand.filter((_, j) => j !== i);
+      byKey.set(k, isTenpai(rest, melds, wildcard));
+    }
+    if (byKey.get(k)) ids.push(hand[i].id);
   }
   return ids;
 }
