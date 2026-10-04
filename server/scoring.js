@@ -20,6 +20,13 @@ export const RIICHI_BET = 1000;
  */
 export const NOTEN_BAO = 3600;
 
+/** Limitless Asura: the noten pool shrinks with the players still in the hand. */
+const ASURA_NOTEN_POOL = { 5: 3600, 4: 3000, 3: 2000, 2: 1000 };
+
+export function notenPoolForPlayers(remaining) {
+  return ASURA_NOTEN_POOL[remaining] ?? 0;
+}
+
 /** Round a payment up to the next 100 (riichi convention). */
 export function roundUpTo100(n) {
   if (n <= 0) return 0;
@@ -160,6 +167,8 @@ export function mergeScoreDeltas(scores, playerCount = 5) {
 /**
  * Noten (未听) penalty on exhaustive draw.
  * With a ready and b not-ready players (1..4 each): ready +3600/a, noten −3600/b.
+ * When `activeSeats` is given (Limitless Asura), the 3600 pool is replaced by
+ * the pool for the remaining player count (5: 3600, 4: 3000, 3: 2000, 2: 1000).
  * If a = 0 or b = 0, no exchange.
  *
  * @param {boolean[]} readyFlags length = playerCount
@@ -191,13 +200,14 @@ export function scoreNotenPenalty(readyFlags, playerCount = 5, activeSeats = nul
     return { deltas, payments, gain: 0, loss: 0, readyCount: a, notenCount: b };
   }
 
-  const gain = NOTEN_BAO / a;
-  const loss = NOTEN_BAO / b;
+  const pool = activeSeats == null ? NOTEN_BAO : notenPoolForPlayers(a + b);
+  const gain = pool / a;
+  const loss = pool / b;
   for (const s of ready) deltas[s] += gain;
   for (const s of noten) deltas[s] -= loss;
 
   // Each not-ready pays an equal share of each ready player's gain.
-  const perPair = gain / b; // = loss / a = 3600/(a*b)
+  const perPair = gain / b; // = loss / a = pool/(a*b)
   for (const from of noten) {
     for (const to of ready) {
       payments.push({ from, to, amount: perPair });

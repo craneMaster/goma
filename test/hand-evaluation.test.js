@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { buildDeck } from '../server/tiles.js';
 import { countDora } from '../server/dora.js';
-import { scoreWin } from '../server/scoring.js';
+import { scoreNotenPenalty, scoreWin } from '../server/scoring.js';
 import { calculateHan } from '../server/yaku.js';
 import { getWaitKeys, isTenpai } from '../server/riichi.js';
 import { canWin, getWinPatterns } from '../server/win.js';
@@ -487,6 +487,19 @@ test('Asura ready hands follow the 12-tile shape rules', () => {
   assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 1d'), true); // 11 distinct, one pair
   assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 2d'), true); // 12 distinct
   assert.equal(ready('1m 9m 1p 9p 1s 9s 1w 2w 3w 4w 1d 5m'), false);
+});
+
+test('Asura noten pool depends on the players remaining', () => {
+  const ready = [true, false, true, false, false];
+  assert.deepEqual(
+    scoreNotenPenalty(ready, 5, [0, 1, 2, 3, 4]).deltas,
+    [1800, -1200, 1800, -1200, -1200]
+  );
+  assert.deepEqual(scoreNotenPenalty(ready, 5, [0, 1, 2, 3]).deltas, [1500, -1500, 1500, -1500, 0]);
+  assert.deepEqual(scoreNotenPenalty(ready, 5, [0, 1, 2]).deltas, [1000, -2000, 1000, 0, 0]);
+  assert.deepEqual(scoreNotenPenalty(ready, 5, [0, 1]).deltas, [1000, -1000, 0, 0, 0]);
+  // Standard mode keeps the fixed 3600 pool.
+  assert.deepEqual(scoreNotenPenalty(ready, 5).deltas, [1800, -1200, 1800, -1200, -1200]);
 });
 
 test('wildcard itself is not counted as a red tile', () => {

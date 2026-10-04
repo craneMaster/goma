@@ -1,5 +1,5 @@
 import { getMeldTileViews } from './melds.js';
-import { openReplayViewer, openReplayFile } from './replay-view.js';
+import { openReplayViewer, openReplayFile } from './replay-view.js?v=2';
 
 const socket = io();
 
@@ -851,6 +851,24 @@ function seatWon(win, seat) {
   return !!win?.winners?.includes(seat);
 }
 
+/**
+ * Winning tile + mode for one seat. Limitless Asura can have several wins
+ * per hand, so the round-level winTile/winMode only describe the latest win.
+ */
+function seatWinDisplay(s, seat, win = roundWinInfo(s)) {
+  const pr =
+    s.phase === 'roundEnd'
+      ? s.roundSummary?.players?.find((r) => r.seat === seat)
+      : null;
+  if (pr?.won && pr.winMode) {
+    return { tile: pr.winTile ?? null, mode: pr.winMode };
+  }
+  const p = s.players?.find((x) => x.seat === seat);
+  if (p?.winningTile) return { tile: p.winningTile, mode: 'tsumo' };
+  if (seatWon(win, seat)) return { tile: win.winTile, mode: win.winMode };
+  return { tile: null, mode: null };
+}
+
 function concealedHandTiles(hand, winTile) {
   if (!hand?.length) return [];
   if (!winTile) return hand;
@@ -1348,14 +1366,13 @@ function renderRoundEndPanel(s) {
     const hasMelds = revealHand && (pr.melds || []).length > 0;
     if (hasMelds) tilesRow.appendChild(meldsHost);
 
-    const win = roundWinInfo(s);
-    const winTile = pr.won ? pr.winTile ?? win?.winTile : null;
+    const seatWin = pr.won ? seatWinDisplay(s, pr.seat) : { tile: null, mode: null };
     const handRow = document.createElement('div');
     handRow.className = 'hand round-end-hand winning-hand';
     if (revealHand) {
-      populateWinningHand(handRow, pr.hand, winTile, {
+      populateWinningHand(handRow, pr.hand, seatWin.tile, {
         small: true,
-        winMode: win?.winMode,
+        winMode: seatWin.mode,
       });
       if (pr.wildcard) handRow.appendChild(createTileEl(pr.wildcard, { small: true }));
     }
@@ -1475,10 +1492,10 @@ function renderTable(s) {
       if (shouldRevealHandAtRoundEnd(s, p.seat) && p.hand?.length) {
         backRow.classList.remove('hand-back');
         backRow.classList.add('hand', 'revealed-hand', 'winning-hand');
-        const winTile = seatWon(win, p.seat) ? win.winTile : null;
-        populateWinningHand(backRow, p.hand, winTile, {
+        const seatWin = seatWinDisplay(s, p.seat, win);
+        populateWinningHand(backRow, p.hand, seatWin.tile, {
           small: true,
-          winMode: win?.winMode,
+          winMode: seatWin.mode,
         });
         if (p.wildcard) backRow.appendChild(createTileEl(p.wildcard, { small: true }));
       } else {
@@ -1771,12 +1788,11 @@ function renderYourArea(s) {
     }
     const revealMine = shouldRevealHandAtRoundEnd(s, s.mySeat);
     if (revealMine) {
-      const win = roundWinInfo(s);
-      const winTile = seatWon(win, s.mySeat) ? win.winTile : null;
+      const seatWin = seatWinDisplay(s, s.mySeat);
       yourHand.classList.add('winning-hand');
-      populateWinningHand(yourHand, me.hand, winTile, {
+      populateWinningHand(yourHand, me.hand, seatWin.tile, {
         small: true,
-        winMode: win?.winMode,
+        winMode: seatWin.mode,
       });
       if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard, { small: true }));
     } else {
@@ -1859,8 +1875,13 @@ function renderYourArea(s) {
     yourHand.appendChild(el);
   };
 
-  for (const t of handRest) appendHandTile(t, false);
-  for (const t of handDrawn) appendHandTile(t, true);
+  if (me.won && me.winningTile) {
+    yourHand.classList.add('winning-hand');
+    populateWinningHand(yourHand, me.hand, me.winningTile, { winMode: 'tsumo', small: false });
+  } else {
+    for (const t of handRest) appendHandTile(t, false);
+    for (const t of handDrawn) appendHandTile(t, true);
+  }
   if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard));
 
   const cw = s.claimWindow;

@@ -317,10 +317,24 @@ export function openReplayViewer(replay, opts = {}) {
       const handRow = document.createElement('div');
       handRow.className = 'replay-hand tile-row';
       // Always face-up for every seat in replay.
+      const tsumoTile = p.won ? p.winningTile : null;
       for (const t of p.hand ?? []) {
+        if (tsumoTile && t.id === tsumoTile.id) continue;
         handRow.appendChild(
           createTileEl(t, { highlight: !!(hi && t.id === hi) })
         );
+      }
+      if (tsumoTile) {
+        const winSlot = document.createElement('div');
+        winSlot.className = 'win-tile-slot';
+        const label = document.createElement('span');
+        label.className = 'win-tile-label';
+        label.textContent = 'tsumo';
+        winSlot.appendChild(label);
+        const winEl = createTileEl(tsumoTile, { highlight: !!(hi && tsumoTile.id === hi) });
+        winEl.classList.add('win-tile');
+        winSlot.appendChild(winEl);
+        handRow.appendChild(winSlot);
       }
       if (p.wildcard) handRow.appendChild(createTileEl(p.wildcard));
       if (!p.hand?.length) {
