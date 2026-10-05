@@ -299,6 +299,33 @@ test('Limitless Asura ron resumes after the caller seat', () => {
   );
 });
 
+test('Limitless Asura ends the game immediately when a win busts a player', () => {
+  const room = new MahjongRoom('asura-bust-test');
+  room.gameMode = 'limitless-asura';
+  room.phase = 'playing';
+  room.currentTurn = 0;
+  room.liveWall = [tile('sou', 9)];
+  room.players.forEach((player) => {
+    player.active = true;
+    player.points = 40000;
+    player.melds = [];
+  });
+  room.players[0].points = 100;
+  room.players[2].hand = [...twoSidedPhysicalHand];
+
+  room.finishWins(
+    [{ seat: 2, patterns: ['standard'] }],
+    'ron',
+    0,
+    tile('man', 6)
+  );
+
+  assert.ok(room.players[0].points < 0);
+  assert.equal(room.phase, 'roundEnd');
+  assert.equal(room.roundSummary.gameOver, true);
+  assert.equal(room.roundSummary.gameOverReason, 'negative');
+});
+
 test('Asura ron on a riichi declaration tile leaves the stick for the next winner', () => {
   const room = new MahjongRoom('riichi-ron-test');
   room.gameMode = 'limitless-asura';

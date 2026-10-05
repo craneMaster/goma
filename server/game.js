@@ -1946,8 +1946,11 @@ export class MahjongRoom {
       fromSeat: mode === 'ron' ? fromSeat : null,
       winTile: cloneTile(this.winTile),
     });
+    // In Asura a bust ends the whole game at once — no further wins this hand.
+    const anyoneBusted = this.players.some((p) => p.points < 0);
     if (
       this.isLimitlessAsura() &&
+      !anyoneBusted &&
       this.winners.length < PLAYER_COUNT - 1 &&
       this.activeSeatList().length > 0
     ) {
