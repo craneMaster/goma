@@ -113,6 +113,9 @@ function shuffle(arr) {
 function emptyPlayer(name) {
   return {
     id: null,
+    /** Client-held secret that lets a refreshed page reclaim this seat. */
+    token: null,
+    connected: false,
     name,
     hand: [],
     /** Limitless Asura wildcard; kept outside the physical hand for now. */
@@ -208,6 +211,8 @@ export class MahjongRoom {
     /** Tile ids selected by each player during the Asura opening exchange. */
     this.swapSelections = Array.from({ length: PLAYER_COUNT }, () => null);
     this.swapOffset = null;
+    /** Shared exchange-complete message; each viewer sees their own pass target appended. */
+    this.swapCompleteMessage = null;
     /** True after start until the match ends — length cannot change mid-game. */
     this.gameLengthLocked = false;
     /** Scheduled final wind from game length (unchanged by overtime). */
@@ -295,17 +300,24 @@ export class MahjongRoom {
     }
   }
 
-  join(socketId, name) {
+  join(socketId, name, token = null) {
     const taken = this.seatForSocket(socketId);
     if (taken >= 0) {
       this.ensureValidHost();
       return { ok: true, seat: taken, isHost: socketId === this.hostSocketId };
     }
 
+    const reclaim = token
+      ? this.players.findIndex((p) => p.id !== null && p.token === token)
+      : -1;
+    if (reclaim >= 0) return this.rejoin(reclaim, socketId);
+
     const empty = this.players.findIndex((p) => p.id === null);
     if (empty < 0) return { ok: false, error: 'Room is full (5 players).' };
 
     this.players[empty].id = socketId;
+    this.players[empty].token = token;
+    this.players[empty].connected = true;
     this.players[empty].name = name || `Player ${empty + 1}`;
 
     // First seated player (lowest seat index) is always host.
@@ -328,6 +340,30 @@ export class MahjongRoom {
       seat: empty,
       isHost: socketId === this.hostSocketId,
     };
+  }
+
+  /** A refreshed / reconnected client takes back its seat with a new socket. */
+  rejoin(seat, socketId) {
+    const p = this.players[seat];
+    const oldId = p.id;
+    p.id = socketId;
+    p.connected = true;
+    if (this.hostSocketId === oldId) this.hostSocketId = socketId;
+    this.ensureValidHost();
+    return {
+      ok: true,
+      seat,
+      isHost: socketId === this.hostSocketId,
+      rejoined: true,
+    };
+  }
+
+  /** Keep the seat (and the game) while the player's page reloads. */
+  markDisconnected(socketId) {
+    const seat = this.seatForSocket(socketId);
+    if (seat < 0) return -1;
+    this.players[seat].connected = false;
+    return seat;
   }
 
   leave(socketId) {
@@ -473,6 +509,7 @@ export class MahjongRoom {
     this.openingDiscardPending = true;
     const doraLabel = doraIndicator ? tileLabel(doraIndicator) : '?';
     this.message = `${formatRoundName(this.roundWindIndex, this.roundInWind, this.repeatCount)} — Tile exchange complete. Dora indicator: ${doraLabel}. ${this.players[this.dealerIndex].name} discards first.`;
+    this.swapCompleteMessage = this.message;
     this.beginReplayHand();
     this.recordReplay('tileSwap', { offset });
     return true;
@@ -576,13 +613,14 @@ export class MahjongRoom {
     this.handPayments = [];
     this.riichiPotClaims = [];
     this.swapSelections = Array.from({ length: PLAYER_COUNT }, () => null);
+    this.swapCompleteMessage = null;
     this.swapOffset = this.isLimitlessAsura()
       ? 1 + Math.floor(Math.random() * 4)
       : null;
     if (this.isLimitlessAsura()) {
       this.phase = 'tile-swap';
       this.replayHand = null;
-      this.message = `Opening exchange — pass your 3 selected tiles ${this.swapOffset} seat${this.swapOffset === 1 ? '' : 's'} clockwise. Selections remain hidden.`;
+      this.message = 'Opening exchange — select 3 tiles to pass. Who receives them is revealed after everyone confirms. Selections remain hidden.';
       return;
     }
 
@@ -3014,6 +3052,21 @@ export class MahjongRoom {
     };
   }
 
+  swapPassedToSeat(seat) {
+    if (seat < 0 || !this.isLimitlessAsura() || this.swapOffset == null) return null;
+    if (this.phase === 'tile-swap') return null;
+    return (seat + this.swapOffset) % PLAYER_COUNT;
+  }
+
+  messageForSeat(seat) {
+    if (!this.swapCompleteMessage || this.message !== this.swapCompleteMessage) {
+      return this.message;
+    }
+    const target = this.swapPassedToSeat(seat);
+    if (target == null) return this.message;
+    return `${this.message} You passed your 3 tiles to ${this.players[target].name}.`;
+  }
+
   snapshotFor(socketId) {
     this.ensureValidHost();
     const mySeat = this.seatForSocket(socketId);
@@ -3021,10 +3074,13 @@ export class MahjongRoom {
     return {
       code: this.code,
       phase: this.phase,
-      message: this.message,
+      message: this.messageForSeat(mySeat),
       swapSelection:
         mySeat >= 0 ? [...(this.swapSelections[mySeat] ?? [])] : [],
-      swapOffset: this.isLimitlessAsura() ? this.swapOffset : null,
+      // The pass distance stays secret until the exchange has happened.
+      swapOffset:
+        this.isLimitlessAsura() && this.phase !== 'tile-swap' ? this.swapOffset : null,
+      swapPassedTo: this.swapPassedToSeat(mySeat),
       swapReadySeats: this.swapSelections
         .map((selection, seat) => (selection?.length === 3 ? seat : -1))
         .filter((seat) => seat >= 0),
@@ -3109,6 +3165,7 @@ export class MahjongRoom {
         seat: i,
         name: p.name,
         occupied: p.id !== null,
+        connected: p.id !== null && p.connected,
         isYou: p.id === socketId,
         wind: windForSeat(i, this.dealerIndex),
         handCount: p.hand.length + (p.wildcard ? 1 : 0),

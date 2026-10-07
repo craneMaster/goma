@@ -33,6 +33,9 @@ app.get('/api/info', (_req, res) => {
   });
 });
 
+const LOBBY_RECONNECT_GRACE_MS = 30 * 1000;
+const GAME_RECONNECT_GRACE_MS = 10 * 60 * 1000;
+
 function emitState(room) {
   for (const p of room.players) {
     if (p.id) io.to(p.id).emit('state', room.snapshotFor(p.id));
@@ -42,25 +45,33 @@ function emitState(room) {
 io.on('connection', (socket) => {
   let roomCode = null;
 
-  socket.on('join', ({ code, name }, cb) => {
+  socket.on('join', ({ code, name, token }, cb) => {
     const room = getOrCreateRoom(code || 'TABLE');
     room.onAsyncUpdate = emitState;
-    roomCode = room.code;
-    socket.join(roomCode);
 
-    const result = room.join(socket.id, name);
+    const result = room.join(
+      socket.id,
+      name,
+      typeof token === 'string' && token ? token.slice(0, 100) : null
+    );
     if (!result.ok) {
+      removeRoomIfEmpty(room.code);
       cb?.(result);
       return;
     }
+    roomCode = room.code;
+    socket.join(roomCode);
     cb?.({
       ok: true,
       seat: result.seat,
       code: room.code,
       isHost: !!result.isHost,
+      rejoined: !!result.rejoined,
     });
     emitState(room);
-    socket.to(roomCode).emit('playerJoined', { seat: result.seat, name });
+    if (!result.rejoined) {
+      socket.to(roomCode).emit('playerJoined', { seat: result.seat, name });
+    }
   });
 
   socket.on('start', (payload, cb) => {
@@ -169,11 +180,24 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (!roomCode) return;
-    const room = getOrCreateRoom(roomCode);
-    room.leave(socket.id);
+    const code = roomCode;
+    const room = getOrCreateRoom(code);
+    const seat = room.markDisconnected(socket.id);
+    if (seat < 0) return;
     emitState(room);
-    socket.to(roomCode).emit('playerLeft');
-    removeRoomIfEmpty(roomCode);
+
+    // Hold the seat so a page refresh rejoins seamlessly; only free it if the
+    // player stays away (longer once a match is underway).
+    const graceMs =
+      room.phase === 'lobby' ? LOBBY_RECONNECT_GRACE_MS : GAME_RECONNECT_GRACE_MS;
+    setTimeout(() => {
+      const p = room.players[seat];
+      if (p.id !== socket.id || p.connected) return;
+      room.leave(socket.id);
+      emitState(room);
+      io.to(code).emit('playerLeft');
+      removeRoomIfEmpty(code);
+    }, graceMs);
   });
 });
 

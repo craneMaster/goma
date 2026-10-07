@@ -151,7 +151,9 @@ test('Limitless Asura performs a hidden three-tile exchange before wildcards', (
   assert.ok(room.players.every((p) => p.wildcard === null));
   assert.ok(room.swapOffset >= 1 && room.swapOffset <= 4);
   assert.equal(room.deadWall.doraRevealed, 0);
-  assert.equal(room.snapshotFor('swap-player-1').swapOffset, room.swapOffset);
+  assert.equal(room.snapshotFor('swap-player-1').swapOffset, null);
+  assert.equal(room.snapshotFor('swap-player-1').swapPassedTo, null);
+  assert.ok(!/\d seat/.test(room.snapshotFor('swap-player-1').message));
   assert.deepEqual(room.snapshotFor('swap-player-1').deadWall.doraIndicators, []);
 
   const selected = room.players.map((player) => player.hand.slice(0, 3).map((t) => t.id));
@@ -171,6 +173,12 @@ test('Limitless Asura performs a hidden three-tile exchange before wildcards', (
 
   assert.equal(room.phase, 'playing');
   assert.ok(room.swapOffset >= 1 && room.swapOffset <= 4);
+  for (let seat = 0; seat < room.players.length; seat++) {
+    const view = room.snapshotFor(`swap-player-${seat}`);
+    const target = (seat + room.swapOffset) % 5;
+    assert.equal(view.swapPassedTo, target);
+    assert.ok(view.message.endsWith(`passed your 3 tiles to ${room.players[target].name}.`));
+  }
   assert.equal(room.deadWall.doraRevealed, 1);
   assert.equal(room.snapshotFor('swap-player-1').deadWall.doraIndicators.length, 1);
   assert.ok(room.players.every((p) => p.wildcard?.wildcard === true));
@@ -527,6 +535,50 @@ test('Asura noten pool depends on the players remaining', () => {
   assert.deepEqual(scoreNotenPenalty(ready, 5, [0, 1]).deltas, [1000, -1000, 0, 0, 0]);
   // Standard mode keeps the fixed 3600 pool.
   assert.deepEqual(scoreNotenPenalty(ready, 5).deltas, [1800, -1200, 1800, -1200, -1200]);
+});
+
+test('ryanpeikou beats seven pairs, with or without a wildcard', () => {
+  // 112233m 445566p 77s — readable as seven pairs or as twice pure double sequence.
+  const full = hand([
+    ['man', 1], ['man', 1, 1], ['man', 2], ['man', 2, 1], ['man', 3], ['man', 3, 1],
+    ['pin', 4], ['pin', 4, 1], ['pin', 5], ['pin', 5, 1], ['pin', 6], ['pin', 6, 1],
+    ['sou', 7],
+  ]);
+  const winTile = tile('sou', 7, 1);
+  const ids = (r) => r.yakus.map((y) => y.id);
+
+  const standard = calculateHan(full, [], scoringOptions({ mode: 'ron', winTile }));
+  assert.ok(ids(standard).includes('ryanpeikou'));
+  assert.ok(!ids(standard).includes('chiitoitsu'));
+
+  // Asura: the wildcard stands in for one of the 1m.
+  const physical = full.filter((t) => !(t.suit === 'man' && t.rank === 1 && t.copy === 1));
+  const asura = calculateHan(physical, [], scoringOptions({ mode: 'ron', winTile, wildcard }));
+  assert.ok(ids(asura).includes('ryanpeikou'));
+  assert.ok(!ids(asura).includes('chiitoitsu'));
+});
+
+test('a refreshed player reclaims their seat mid-game with their token', () => {
+  const room = new MahjongRoom('refresh-test');
+  for (let i = 0; i < 5; i++) room.join(`s${i}`, `P${i}`, `tok${i}`);
+  assert.equal(room.start('s0', { gameLength: 'east' }).ok, true);
+  const handBefore = room.players[2].hand.map((t) => t.id);
+
+  room.markDisconnected('s2');
+  assert.equal(room.phase, 'playing');
+  assert.equal(room.snapshotFor('s0').players[2].connected, false);
+  assert.equal(room.join('stranger', 'X', 'other').ok, false);
+
+  const res = room.join('s2-new', 'P2', 'tok2');
+  assert.equal(res.ok, true);
+  assert.equal(res.seat, 2);
+  const view = room.snapshotFor('s2-new');
+  assert.equal(view.phase, 'playing');
+  assert.deepEqual(view.players[2].hand.map((t) => t.id), handBefore);
+  assert.equal(view.players[2].connected, true);
+
+  room.markDisconnected('s0');
+  assert.equal(room.join('s0-new', 'P0', 'tok0').isHost, true);
 });
 
 test('wildcard itself is not counted as a red tile', () => {

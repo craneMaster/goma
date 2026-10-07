@@ -2706,6 +2706,16 @@ body.replay-open {
   font-weight: 700;
 }
 
+.offline-badge {
+  margin-left: 0.35rem;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: rgba(200, 80, 80, 0.25);
+  color: #f0a3a3;
+  font-size: 0.75em;
+  font-weight: 700;
+}
+
 .tile.small {
   width: var(--tile-sm-w);
   height: var(--tile-sm-h);

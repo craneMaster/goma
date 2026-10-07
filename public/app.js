@@ -130,6 +130,8 @@ let cachedReplay = null;
 let state = null;
 let pendingDiscard = false;
 let pendingSwapSelection = [];
+/** True while the last rendered state was in the opening exchange. */
+let swapPhaseActive = false;
 /** Last gameLength value we copied from the server into the length selects. */
 let syncedGameLength = null;
 
@@ -637,9 +639,13 @@ function seatHeaderHtml(p, s) {
       ? '<span class="dealer-badge">Dealer</span>'
       : '';
   const name = p.occupied ? escapeHtml(p.name) : 'Empty';
+  const offlineBadge =
+    p.occupied && p.connected === false
+      ? '<span class="offline-badge" title="Reconnecting — seat is held">Offline</span>'
+      : '';
   return `
     <span class="wind">${windLabel(p.wind)}</span>
-    <span class="name">${name}</span>${dealerBadge}${wonBadge}${riichiBadge}${furitenBadge}${statusBadge}
+    <span class="name">${name}</span>${offlineBadge}${dealerBadge}${wonBadge}${riichiBadge}${furitenBadge}${statusBadge}
     ${points}
   `;
 }
@@ -1683,19 +1689,19 @@ function syncSwapPanel(s) {
 
   const readyCount = (s.swapReadySeats || []).length;
   const selectedCount = pendingSwapSelection.length;
-  const offset = s.swapOffset ?? '?';
   const serverSelection = s.swapSelection || [];
   const confirmed =
     (s.swapReadySeats || []).includes(s.mySeat) &&
     serverSelection.length === pendingSwapSelection.length &&
     serverSelection.every((id) => pendingSwapSelection.includes(id));
+  const reveal = 'The receiver is revealed after everyone confirms.';
   if (swapStatus) {
     swapStatus.textContent =
       confirmed
-        ? `Swap confirmed. Pass ${3} tiles ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`
+        ? `Swap confirmed. ${reveal} ${readyCount}/5 players have confirmed.`
         : selectedCount === 3
-          ? `Pass ${3} tiles ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`
-        : `Select ${3 - selectedCount} more physical tile${3 - selectedCount === 1 ? '' : 's'}; pass ${offset} seat${offset === 1 ? '' : 's'} clockwise. ${readyCount}/5 players have confirmed.`;
+          ? `Confirm your 3 tiles. ${reveal} ${readyCount}/5 players have confirmed.`
+        : `Select ${3 - selectedCount} more physical tile${3 - selectedCount === 1 ? '' : 's'} to pass. ${reveal} ${readyCount}/5 players have confirmed.`;
   }
   if (btnConfirmSwap) {
     btnConfirmSwap.disabled = selectedCount !== 3;
@@ -1718,11 +1724,20 @@ function renderYourArea(s) {
   if (swapPanel) swapPanel.hidden = true;
   document.getElementById('game')?.classList.toggle('game-round-end', s.phase === 'roundEnd');
 
+  const wasSwapPhase = swapPhaseActive;
+  swapPhaseActive = s.phase === 'tile-swap';
+
   const me = s.players.find((p) => p.isYou);
   if (!me) return;
 
   if (s.phase === 'tile-swap') {
-    pendingSwapSelection = [...(s.swapSelection || [])];
+    // Other players' confirmations re-render the hand; keep this player's
+    // unconfirmed picks. The server only knows confirmed selections.
+    const confirmedSelection = s.swapSelection || [];
+    if (!wasSwapPhase) pendingSwapSelection = [];
+    if (confirmedSelection.length > 0) pendingSwapSelection = [...confirmedSelection];
+    const handIds = new Set((me.hand || []).map((t) => t.id));
+    pendingSwapSelection = pendingSwapSelection.filter((id) => handIds.has(id));
     for (const t of me.hand || []) {
       const selected = pendingSwapSelection.includes(t.id);
       const el = createTileEl(t, { selectable: true });
@@ -2021,19 +2036,43 @@ function doDeclare(kind, payload) {
   });
 }
 
-joinForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  joinError.hidden = true;
+const PLAYER_TOKEN_KEY = 'mahjong5-player-token';
+const SESSION_KEY = 'mahjong5-session';
 
-  const name = $('#player-name').value.trim() || 'Player';
-  const code = $('#room-code').value.trim() || 'TABLE';
+/** Per-tab identity; sessionStorage survives a refresh but not a new tab. */
+function playerToken() {
+  let token = sessionStorage.getItem(PLAYER_TOKEN_KEY);
+  if (!token) {
+    token =
+      globalThis.crypto?.randomUUID?.() ??
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem(PLAYER_TOKEN_KEY, token);
+  }
+  return token;
+}
 
-  socket.emit('join', { code, name }, (res) => {
+function savedSession() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function joinRoom(code, name, { auto = false } = {}) {
+  socket.emit('join', { code, name, token: playerToken() }, (res) => {
     if (!res?.ok) {
+      if (auto) {
+        sessionStorage.removeItem(SESSION_KEY);
+        lobby.hidden = false;
+        game.hidden = true;
+      }
       joinError.textContent = res?.error ?? 'Could not join room.';
       joinError.hidden = false;
       return;
     }
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ code: res.code ?? code, name }));
     lobby.hidden = true;
     game.hidden = false;
     // Show host controls immediately from join ack (don't wait for state).
@@ -2046,7 +2085,29 @@ joinForm.addEventListener('submit', (e) => {
       setStartPanelVisible(false);
     }
   });
+}
+
+joinForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  joinError.hidden = true;
+
+  const name = $('#player-name').value.trim() || 'Player';
+  const code = $('#room-code').value.trim() || 'TABLE';
+  joinRoom(code, name);
 });
+
+// Page refresh or a dropped connection: reclaim the same seat automatically.
+function rejoinSavedSession() {
+  const session = savedSession();
+  if (!session?.code) return;
+  joinRoom(session.code, session.name, { auto: true });
+}
+socket.on('connect', rejoinSavedSession);
+if (savedSession()?.code) {
+  lobby.hidden = true;
+  game.hidden = false;
+  if (socket.connected) rejoinSavedSession();
+}
 
 btnStart?.addEventListener('click', requestStart);
 

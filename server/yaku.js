@@ -1018,7 +1018,8 @@ export function calculateHan(hand, melds, options) {
         candidateDora,
         wildcard ? 0 : candidateUraDora
       );
-        continue;
+        // No `continue`: the same tiles may also read as four melds & a pair
+        // (e.g. ryanpeikou), and the higher-scoring interpretation must win.
       }
       for (const part of findPartitions(tiles, melds)) {
         for (const interpretation of waitInterpretations(part, ctx.winKey)) {
