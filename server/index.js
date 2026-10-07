@@ -111,6 +111,14 @@ io.on('connection', (socket) => {
     if (result.ok) emitState(room);
   });
 
+  socket.on('setOpenCalls', ({ on } = {}, cb) => {
+    if (!roomCode) return cb?.({ ok: false, error: 'Not in a room.' });
+    const room = getOrCreateRoom(roomCode);
+    const result = room.setOpenCalls(socket.id, on);
+    cb?.(result);
+    if (result.ok) emitState(room);
+  });
+
   socket.on('passClaim', (_, cb) => {
     if (!roomCode) return cb?.({ ok: false, error: 'Not in a room.' });
     const room = getOrCreateRoom(roomCode);

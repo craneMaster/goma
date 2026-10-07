@@ -334,6 +334,34 @@ test('Limitless Asura ends the game immediately when a win busts a player', () =
   assert.equal(room.roundSummary.gameOverReason, 'negative');
 });
 
+test('Asura records the winning tile for every tsumo, not just the first', () => {
+  const room = new MahjongRoom('asura-multi-tsumo');
+  room.gameMode = 'limitless-asura';
+  room.phase = 'playing';
+  room.liveWall = [tile('sou', 9), tile('sou', 9, 1), tile('sou', 9, 2)];
+  room.players.forEach((player) => {
+    player.active = true;
+    player.points = 40000;
+    player.melds = [];
+  });
+
+  const first = tile('man', 3);
+  room.currentTurn = 1;
+  room.players[1].hand = [...twoSidedPhysicalHand, first];
+  room.lastDrawn = first.id;
+  room.finishWins([{ seat: 1, patterns: ['standard'] }], 'tsumo');
+
+  const second = tile('man', 6);
+  room.currentTurn = 3;
+  room.players[3].hand = [...twoSidedPhysicalHand, second];
+  room.lastDrawn = second.id;
+  room.finishWins([{ seat: 3, patterns: ['standard'] }], 'tsumo');
+
+  assert.equal(room.players[1].winningTile?.id, first.id);
+  assert.equal(room.players[3].winningTile?.id, second.id);
+  assert.equal(room.winResults.find((r) => r.seat === 3)?.winTile?.id, second.id);
+});
+
 test('Asura ron on a riichi declaration tile leaves the stick for the next winner', () => {
   const room = new MahjongRoom('riichi-ron-test');
   room.gameMode = 'limitless-asura';

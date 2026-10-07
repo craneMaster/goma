@@ -1,5 +1,5 @@
 import { getMeldTileViews } from './melds.js';
-import { openReplayViewer, openReplayFile } from './replay-view.js?v=2';
+import { openReplayViewer, openReplayFile } from './replay-view.js?v=3';
 
 const socket = io();
 
@@ -45,9 +45,17 @@ function persistOpenCallsEnabled() {
 }
 
 function setOpenCallsEnabled(on) {
+  const changed = openCallsEnabled !== !!on;
   openCallsEnabled = !!on;
   persistOpenCallsEnabled();
   syncOpenCallsButton();
+  if (changed) sendOpenCallsToServer();
+}
+
+/** The server filters calls itself, so no claim window ever waits on this seat. */
+function sendOpenCallsToServer() {
+  if (!state) return;
+  socket.emit('setOpenCalls', { on: openCallsEnabled });
 }
 
 function handKeyForOpenCalls(s) {
@@ -1380,7 +1388,7 @@ function renderRoundEndPanel(s) {
         small: true,
         winMode: seatWin.mode,
       });
-      if (pr.wildcard) handRow.appendChild(createTileEl(pr.wildcard, { small: true }));
+      if (pr.wildcard) handRow.prepend(createTileEl(pr.wildcard, { small: true }));
     }
     tilesRow.appendChild(handRow);
     body.appendChild(tilesRow);
@@ -1428,7 +1436,7 @@ function renderTable(s) {
   if (centerMeta) {
     centerMeta.innerHTML = `
       <span class="center-round">五麻 · ${roundName}${s.gameLengthLabel ? ` · ${s.gameLengthLabel}` : ''}${s.gameModeLabel && s.gameMode !== 'standard' ? ` · ${s.gameModeLabel}` : ''}${s.inTiebreaker ? ' · tiebreaker' : ''}${s.phase === 'roundEnd' ? ' (ended)' : ''}</span>
-      ${cw ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
+      ${cw && viewerCanClaim(s) ? `<span class="claim-wait">${cw.reason === 'chankan' ? 'Chankan' : 'Claim'}: ${tileCodeLabel(cw.tile)}</span>` : ''}
     `;
   }
 
@@ -1503,7 +1511,7 @@ function renderTable(s) {
           small: true,
           winMode: seatWin.mode,
         });
-        if (p.wildcard) backRow.appendChild(createTileEl(p.wildcard, { small: true }));
+        if (p.wildcard) backRow.prepend(createTileEl(p.wildcard, { small: true }));
       } else {
         if (p.winningTile) {
           backRow.appendChild(createTileEl(p.winningTile, { small: true, winTile: true }));
@@ -1809,7 +1817,7 @@ function renderYourArea(s) {
         small: true,
         winMode: seatWin.mode,
       });
-      if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard, { small: true }));
+      if (me.wildcard) yourHand.prepend(createTileEl(me.wildcard, { small: true }));
     } else {
       const count = me.hand?.length ?? me.handCount ?? 0;
       for (let i = 0; i < count; i++) {
@@ -1890,6 +1898,8 @@ function renderYourArea(s) {
     yourHand.appendChild(el);
   };
 
+  // Asura wildcard sits at the very left of the hand.
+  if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard));
   if (me.won && me.winningTile) {
     yourHand.classList.add('winning-hand');
     populateWinningHand(yourHand, me.hand, me.winningTile, { winMode: 'tsumo', small: false });
@@ -1897,7 +1907,6 @@ function renderYourArea(s) {
     for (const t of handRest) appendHandTile(t, false);
     for (const t of handDrawn) appendHandTile(t, true);
   }
-  if (me.wildcard) yourHand.appendChild(createTileEl(me.wildcard));
 
   const cw = s.claimWindow;
   const canClaim = viewerCanClaim(s);
@@ -2073,6 +2082,7 @@ function joinRoom(code, name, { auto = false } = {}) {
       return;
     }
     sessionStorage.setItem(SESSION_KEY, JSON.stringify({ code: res.code ?? code, name }));
+    socket.emit('setOpenCalls', { on: openCallsEnabled });
     lobby.hidden = true;
     game.hidden = false;
     // Show host controls immediately from join ack (don't wait for state).

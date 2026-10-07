@@ -1750,11 +1750,9 @@ body.replay-open {
   border-radius: 0;
   border: none;
   clip-path: var(--pentagon);
-  filter:
-    drop-shadow(0 0 1px #0d281f)
-    drop-shadow(0 0 1px #0d281f)
-    drop-shadow(0 0 2px #0d281f)
-    drop-shadow(0 10px 28px rgba(0, 0, 0, 0.45));
+  /* No `filter` here: clip-path is applied after filters, so drop-shadows were
+     clipped away anyway, while forcing the whole table (every tile) through
+     an offscreen blur on each repaint and scroll. */
   box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.38);
   padding: 0;
   overflow: hidden;

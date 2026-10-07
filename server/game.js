@@ -116,6 +116,8 @@ function emptyPlayer(name) {
     /** Client-held secret that lets a refreshed page reclaim this seat. */
     token: null,
     connected: false,
+    /** Open Calls preference; when off, only ron is offered on others' tiles. */
+    openCalls: true,
     name,
     hand: [],
     /** Limitless Asura wildcard; kept outside the physical hand for now. */
@@ -358,6 +360,15 @@ export class MahjongRoom {
     };
   }
 
+  /** Open Calls off: chi/pon/kan/kin are dropped server-side, so no claim window waits on this seat. */
+  setOpenCalls(socketId, on) {
+    const seat = this.seatForSocket(socketId);
+    if (seat < 0) return { ok: false, error: 'Not in room.' };
+    this.players[seat].openCalls = !!on;
+    if (!this.claimWindow || this.claimResponded.has(seat)) return { ok: true };
+    return { ok: true, ...this.autoPassWithNoClaims() };
+  }
+
   /** Keep the seat (and the game) while the player's page reloads. */
   markDisconnected(socketId) {
     const seat = this.seatForSocket(socketId);
@@ -546,6 +557,8 @@ export class MahjongRoom {
 
     for (const p of this.players) {
       p.hand = [];
+      // Open Calls turns back on at the start of every hand.
+      p.openCalls = true;
       // In Limitless Asura the wildcard is dealt only after the opening exchange.
       p.wildcard = null;
       p.active = true;
@@ -1827,7 +1840,8 @@ export class MahjongRoom {
     this.kuikaeBan = null;
 
     if (mode === 'tsumo') {
-      const player = this.players[this.winner];
+      // The current winner — in Asura `this.winner` is the hand's first winner.
+      const player = this.players[firstWinner];
       this.winTile = this.lastDrawn
         ? (player.hand.find((t) => t.id === this.lastDrawn) ?? null)
         : null;
@@ -2812,7 +2826,7 @@ export class MahjongRoom {
       const needed = this.rinshanNeededForClaim(c.type, p.hand, p.melds, tile);
       return this.canAffordRinshan(needed);
     });
-    if (p.riichi) claims = claims.filter((c) => c.type === 'win');
+    if (p.riichi || !p.openCalls) claims = claims.filter((c) => c.type === 'win');
 
     // Drop options beaten by a higher-priority claim already submitted.
     const floor = this.highestSubmittedClaimPriority();

@@ -336,7 +336,7 @@ export function openReplayViewer(replay, opts = {}) {
         winSlot.appendChild(winEl);
         handRow.appendChild(winSlot);
       }
-      if (p.wildcard) handRow.appendChild(createTileEl(p.wildcard));
+      if (p.wildcard) handRow.prepend(createTileEl(p.wildcard));
       if (!p.hand?.length) {
         const empty = document.createElement('span');
         empty.className = 'replay-empty';
