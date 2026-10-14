@@ -283,15 +283,18 @@ export function formatPoints(n) {
 
 /**
  * Rank seats by score and attach uma (+20/+10/0/−10/−20 thousand).
+ * `finalScore` is (finalPoints − basePoints) / 1000.
  * @param {Array<{ seat: number, name: string, points: number }>} players
+ * @param {{ useUma?: boolean, basePoints?: number }} [opts]
  */
-export function computeUmaStandings(players) {
+export function computeUmaStandings(players, { useUma = true, basePoints = STARTING_POINTS } = {}) {
   const ranked = [...players].sort(
     (a, b) => b.points - a.points || a.seat - b.seat
   );
   return ranked.map((p, i) => {
-    const uma = UMA_THOUSANDS[i] ?? 0;
+    const uma = useUma ? UMA_THOUSANDS[i] ?? 0 : 0;
     const umaPoints = uma * 1000;
+    const finalPoints = p.points + umaPoints;
     return {
       seat: p.seat,
       name: p.name,
@@ -299,7 +302,9 @@ export function computeUmaStandings(players) {
       rank: i + 1,
       uma,
       umaPoints,
-      finalPoints: p.points + umaPoints,
+      useUma,
+      finalPoints,
+      finalScore: (finalPoints - basePoints) / 1000,
     };
   });
 }

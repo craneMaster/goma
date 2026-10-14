@@ -194,10 +194,14 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-/** Match-end score as (finalAfterUma − 40000) / 1000, with sign (e.g. +32.0). */
+/**
+ * Match-end score with sign (e.g. +32.0). Uses the server's `finalScore`
+ * (mode-aware base) and falls back to (finalAfterUma − 40000) / 1000.
+ */
 const STARTING_POINTS_DISPLAY = 40000;
-function formatFinalScorePt(finalPoints) {
-  const pt = (Number(finalPoints) - STARTING_POINTS_DISPLAY) / 1000;
+function formatFinalScorePt(finalPoints, finalScore = null) {
+  const pt =
+    finalScore != null ? Number(finalScore) : (Number(finalPoints) - STARTING_POINTS_DISPLAY) / 1000;
   const sign = pt > 0 ? '+' : '';
   const body = Object.is(pt, -0) ? '0.0' : pt.toFixed(1);
   return `${sign}${body}`;
@@ -659,9 +663,12 @@ function seatHeaderHtml(p, s) {
     s.phase !== 'lobby' && p.points != null
       ? `<span class="points">${Number(p.points).toLocaleString()}</span>`
       : '';
-  // Latest win only — in Fury Waves a new win replaces the previous gain.
+  // Only winners of the latest win (all of them on a multi-ron) show a gain.
+  const latestEvent = s.winResults?.at(-1)?.winEvent;
   const lastWin = p.won
-    ? (s.winResults ?? []).filter((r) => r.seat === p.seat).at(-1)
+    ? (s.winResults ?? []).filter(
+        (r) => r.seat === p.seat && (latestEvent == null || r.winEvent === latestEvent)
+      ).at(-1)
     : null;
   const gain = lastWin ? (lastWin.pointDelta ?? 0) + (lastWin.potBonus ?? 0) : 0;
   const winGain =
@@ -1165,18 +1172,23 @@ function renderGameOverStandings(summary, mySeat) {
     const umaPts = pr.umaPoints ?? row.umaPoints ?? (row.uma ?? 0) * 1000;
     const umaSign = umaPts > 0 ? '+' : '';
     const points = pr.points ?? row.points ?? 0;
+    const finalScore = pr.finalScore ?? row.finalScore ?? null;
+    const useUma = (pr.useUma ?? row.useUma) !== false;
+    const umaHtml = useUma
+      ? `<span class="round-end-uma ${umaPts >= 0 ? 'plus' : 'minus'}">${umaSign}${Number(
+          umaPts
+        ).toLocaleString()} uma</span>`
+      : '';
 
     li.innerHTML = `
       <span class="round-end-rank">#${row.rank ?? '—'}</span>
       <span class="round-end-standing-name">${escapeHtml(pr.name ?? row.name ?? 'Player')}</span>
       <span class="round-end-final">${
-        finalPts != null ? formatFinalScorePt(finalPts) : '—'
+        finalPts != null ? formatFinalScorePt(finalPts, finalScore) : '—'
       }</span>
       <span class="round-end-uma-breakdown">
         <span class="round-end-raw">${Number(points).toLocaleString()}</span>
-        <span class="round-end-uma ${umaPts >= 0 ? 'plus' : 'minus'}">${umaSign}${Number(
-          umaPts
-        ).toLocaleString()} uma</span>
+        ${umaHtml}
       </span>
     `;
     list.appendChild(li);
@@ -1352,7 +1364,11 @@ function renderRoundEndPanel(s) {
           : summary.gameOverReason === 'tiebreaker'
             ? 'Tiebreaker go-around finished.'
             : `${summary.gameLengthLabel || 'Match'} complete.`;
-    roundEndDealerNote.textContent = `${reason} Uma +20/+10/0/−10/−20. ${
+    const scoringNote =
+      s.gameMode === 'fury-waves'
+        ? 'No uma — score is (points − 1,000,000) ÷ 1000.'
+        : 'Uma +20/+10/0/−10/−20.';
+    roundEndDealerNote.textContent = `${reason} ${scoringNote} ${
       s.canChooseGameLength
         ? 'Host: choose a new game length below, then start.'
         : 'Waiting for host to choose length and start a new game.'

@@ -747,12 +747,14 @@ export class MahjongRoom {
         const priorWinners = this.isLimitlessAsura() ? [...this.winners] : [];
         this.winners = [...priorWinners, ...nagashiSeats];
         this.winner = this.winners[0] ?? null;
+        const winEvent = this.isLimitlessAsura() ? this.winResults.length : 0;
         this.winResults = [
           ...(this.isLimitlessAsura() ? this.winResults : []),
           ...nagashiSeats.map((seat, idx) => {
           const seatScore = scored.scores[idx];
           return {
             seat,
+            winEvent,
             patterns: ['nagashiMangan'],
             doraCount: 0,
             han: NAGASHI_MANGAN_HAN,
@@ -930,8 +932,14 @@ export class MahjongRoom {
       };
     });
 
+    // Fury Waves: no uma; final score is plain PnL / 1000 from the 1M base.
     const standings = gameOver
-      ? computeUmaStandings(playerResults)
+      ? computeUmaStandings(
+          playerResults,
+          this.isFuryWaves()
+            ? { useUma: false, basePoints: FURY_WAVES_STARTING_POINTS }
+            : {}
+        )
       : [...playerResults]
           .sort((a, b) => b.points - a.points || a.seat - b.seat)
           .map((p, rank) => ({
@@ -949,7 +957,9 @@ export class MahjongRoom {
         pr.rank = s.rank;
         pr.uma = s.uma;
         pr.umaPoints = s.umaPoints;
+        pr.useUma = s.useUma;
         pr.finalPoints = s.finalPoints;
+        pr.finalScore = s.finalScore;
       }
     }
 
@@ -1065,13 +1075,23 @@ export class MahjongRoom {
       } else {
         gameOverNote = ` Game over — ${parseGameLength(this.gameLength).label} complete.`;
       }
-      const umaLine = standings
-        .map(
-          (s) =>
-            `${s.rank}. ${s.name} ${Number(s.points).toLocaleString()} (uma ${s.uma >= 0 ? '+' : ''}${s.uma})`
-        )
-        .join(' · ');
-      gameOverNote += ` Uma: ${umaLine}.`;
+      if (this.isFuryWaves()) {
+        const finalLine = standings
+          .map(
+            (s) =>
+              `${s.rank}. ${s.name} ${s.finalScore > 0 ? '+' : ''}${s.finalScore.toFixed(1)}`
+          )
+          .join(' · ');
+        gameOverNote += ` Final: ${finalLine}.`;
+      } else {
+        const umaLine = standings
+          .map(
+            (s) =>
+              `${s.rank}. ${s.name} ${Number(s.points).toLocaleString()} (uma ${s.uma >= 0 ? '+' : ''}${s.uma})`
+          )
+          .join(' · ');
+        gameOverNote += ` Uma: ${umaLine}.`;
+      }
     } else if (enteringTiebreaker) {
       gameOverNote = ` Nobody at ${TARGET_POINTS.toLocaleString()} — tiebreaker ${nextRoundName} begins. Ends when someone reaches ${TARGET_POINTS.toLocaleString()}.`;
     }
@@ -1897,6 +1917,8 @@ export class MahjongRoom {
     const rinshan = mode === 'tsumo' && this.lastDrawWasRinshan;
     const haitei = mode === 'tsumo' && wallEmpty && !rinshan;
     const houtei = mode === 'ron' && wallEmpty && !chankan;
+    // Winners on the same tile share one event id.
+    const winEvent = this.isLimitlessAsura() ? this.winResults.length : 0;
 
     const scoredResults = results.map((r) => {
       const player = this.players[r.seat];
@@ -1954,6 +1976,7 @@ export class MahjongRoom {
         payments: scored.payments,
         pointDelta: scored.deltas[r.seat],
         score: scored,
+        winEvent,
       };
     });
     this.doraCount = scoredResults.reduce((sum, r) => sum + r.doraCount, 0);

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { buildDeck } from '../server/tiles.js';
 import { countDora } from '../server/dora.js';
-import { scoreNotenPenalty, scoreWin } from '../server/scoring.js';
+import { computeUmaStandings, scoreNotenPenalty, scoreWin } from '../server/scoring.js';
 import { calculateHan } from '../server/yaku.js';
 import { getWaitKeys, isTenpai } from '../server/riichi.js';
 import { canWin, getWinPatterns } from '../server/win.js';
@@ -455,6 +455,48 @@ test('Fury Waves win gain refreshes per win and includes the collected pot', () 
   assert.equal(results.length, 2);
   assert.equal(results.at(-1).potBonus, undefined);
   assert.ok(results.at(-1).pointDelta > 0);
+});
+
+test('Asura-family winners on the same tile share a win event; a later win starts a new one', () => {
+  const room = furyRoom('fury-event');
+  room.currentTurn = 0;
+  room.players[2].hand = [...twoSidedPhysicalHand];
+  room.players[3].hand = [...twoSidedPhysicalHand];
+  room.finishWins(
+    [
+      { seat: 2, patterns: ['standard'] },
+      { seat: 3, patterns: ['standard'] },
+    ],
+    'ron',
+    0,
+    tile('man', 6)
+  );
+  const [a, b] = room.winResults;
+  assert.equal(a.winEvent, b.winEvent);
+
+  room.players[1].hand = [...twoSidedPhysicalHand];
+  room.finishWins([{ seat: 1, patterns: ['standard'] }], 'ron', 4, tile('man', 3, 2));
+  assert.notEqual(room.winResults.at(-1).winEvent, a.winEvent);
+});
+
+test('Fury Waves final score has no uma: (points − 1,000,000) / 1000', () => {
+  const players = [
+    { seat: 0, name: 'A', points: 1_052_300 },
+    { seat: 1, name: 'B', points: 1_000_000 },
+    { seat: 2, name: 'C', points: 987_700 },
+    { seat: 3, name: 'D', points: 990_000 },
+    { seat: 4, name: 'E', points: 970_000 },
+  ];
+  const standings = computeUmaStandings(players, { useUma: false, basePoints: 1_000_000 });
+  const bySeat = Object.fromEntries(standings.map((s) => [s.seat, s]));
+  assert.equal(bySeat[0].finalScore, 52.3);
+  assert.equal(bySeat[0].rank, 1);
+  assert.equal(bySeat[0].umaPoints, 0);
+  assert.equal(bySeat[2].finalScore, -12.3);
+  assert.equal(standings.reduce((sum, s) => sum + s.umaPoints, 0), 0);
+
+  const normal = computeUmaStandings([{ seat: 0, name: 'A', points: 52_000 }, ...players.slice(1).map((p) => ({ ...p, points: 37_000 }))]);
+  assert.equal(normal[0].finalScore, (52_000 + 20_000 - 40_000) / 1000);
 });
 
 test('Fury Waves locked winner auto-discards a useless draw', () => {
