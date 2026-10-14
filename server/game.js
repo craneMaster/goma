@@ -70,11 +70,16 @@ const DEALER_EXTRA = 1;
 const GAME_MODES = {
   standard: { id: 'standard', label: 'Standard 五麻' },
   limitlessAsura: { id: 'limitless-asura', label: 'Limitless Asura' },
+  furyWaves: { id: 'fury-waves', label: 'Fury Waves' },
 };
+const FURY_WAVES_STARTING_POINTS = 1_000_000;
 
 function parseGameMode(mode) {
   if (mode === GAME_MODES.limitlessAsura.id || mode === 'limitlessAsura') {
     return GAME_MODES.limitlessAsura;
+  }
+  if (mode === GAME_MODES.furyWaves.id || mode === 'furyWaves') {
+    return GAME_MODES.furyWaves;
   }
   return GAME_MODES.standard;
 }
@@ -125,6 +130,10 @@ function emptyPlayer(name) {
     active: true,
     won: false,
     winningTile: null,
+    /** Fury Waves: tsumo winning tiles set aside from the hand this deal. */
+    wonTiles: [],
+    /** Fury Waves: every winning tile this deal, in order ({ tile, mode }). */
+    winLog: [],
     discards: [],
     melds: [],
     riichi: false,
@@ -268,8 +277,22 @@ export class MahjongRoom {
     return p.hand.length + inMelds + (p.wildcard ? 1 : 0);
   }
 
+  /** Asura rules (wildcard, opening exchange, multi-win settlement). Fury Waves builds on them. */
   isLimitlessAsura() {
-    return this.gameMode === GAME_MODES.limitlessAsura.id;
+    return (
+      this.gameMode === GAME_MODES.limitlessAsura.id ||
+      this.gameMode === GAME_MODES.furyWaves.id
+    );
+  }
+
+  /** Fury Waves: winners stay in with a locked hand and may keep winning. */
+  isFuryWaves() {
+    return this.gameMode === GAME_MODES.furyWaves.id;
+  }
+
+  /** A Fury Waves winner: only tsumo, ron, closed kan/kin and promotions; otherwise tsumogiri. */
+  isHandLocked(seat) {
+    return this.isFuryWaves() && !!this.players[seat]?.won;
   }
 
   activeSeatList() {
@@ -441,8 +464,10 @@ export class MahjongRoom {
     this.repeatCount = 0;
     this.dealerIndex = 0;
     this.roundSummary = null;
+    const startingPoints =
+      mode.id === GAME_MODES.furyWaves.id ? FURY_WAVES_STARTING_POINTS : STARTING_POINTS;
     for (const p of this.players) {
-      p.points = STARTING_POINTS;
+      p.points = startingPoints;
     }
     this.riichiPot = 0;
     this.lastRiichiPotClaim = null;
@@ -564,6 +589,8 @@ export class MahjongRoom {
       p.active = true;
       p.won = false;
       p.winningTile = null;
+      p.wonTiles = [];
+      p.winLog = [];
       p.discards = [];
       p.melds = [];
       p.riichi = false;
@@ -581,7 +608,7 @@ export class MahjongRoom {
     }
 
     const physicalHandSize =
-      this.gameMode === GAME_MODES.limitlessAsura.id ? HAND_SIZE - 1 : HAND_SIZE;
+      this.isLimitlessAsura() ? HAND_SIZE - 1 : HAND_SIZE;
     for (let round = 0; round < physicalHandSize; round++) {
       for (let s = 0; s < PLAYER_COUNT; s++) {
         this.players[s].hand.push(deck[idx++]);
@@ -851,8 +878,17 @@ export class MahjongRoom {
     const deltas = this.lastPointDeltas ?? Array(PLAYER_COUNT).fill(0);
 
     const playerResults = this.players.map((p, i) => {
-      const result = this.winResults.find((r) => r.seat === i);
+      const seatResults = this.winResults.filter((r) => r.seat === i);
+      // Fury Waves: a seat may win several times; show the latest, list them all.
+      const result = seatResults[seatResults.length - 1];
+      const hanText =
+        seatResults.length > 1
+          ? seatResults.map((r, n) => `#${n + 1} ${r.hanText}`).join(' · ')
+          : result?.hanText ?? '';
       return {
+        winCount: seatResults.length,
+        wonTiles: cloneTiles(p.wonTiles ?? []),
+        winLog: (p.winLog ?? []).map((w) => ({ ...w, tile: cloneTile(w.tile) })),
         seat: i,
         name: p.name,
         wind: windForSeat(i, previousDealer),
@@ -878,7 +914,7 @@ export class MahjongRoom {
         patterns: result?.patterns ?? null,
         doraCount: result?.doraCount ?? 0,
         han: result?.han ?? null,
-        hanText: result?.hanText ?? '',
+        hanText,
         totalHan: result?.han?.totalHan ?? 0,
         fu: result?.han?.fu ?? result?.fu ?? 0,
         points: p.points,
@@ -1398,8 +1434,8 @@ export class MahjongRoom {
   /** True if the riichi player still has a meaningful choice (tsumo / kan / declare discard / undo). */
   riichiMustActManually(seat) {
     const p = this.players[seat];
-    if (!p?.riichi) return false;
-    if (p.riichiFirstDiscard) return true;
+    if (!p?.riichi && !this.isHandLocked(seat)) return false;
+    if (p.riichi && p.riichiFirstDiscard) return true;
     if (this.canUndoRiichi(seat)) return true;
     if (this.canTsumo(seat)) return true;
     const opts = this.selfMeldOptions(seat);
@@ -1413,13 +1449,14 @@ export class MahjongRoom {
   }
 
   /**
-   * After draw (or rinshan), if riichi is locked with only tsumogiri available, discard automatically.
+   * After draw (or rinshan), if riichi (or a Fury Waves locked hand) has only
+   * tsumogiri available, discard automatically.
    */
   tryAutoRiichiDiscard() {
     if (this.phase !== 'playing' || this.claimWindow) return null;
     const seat = this.currentTurn;
     const p = this.players[seat];
-    if (!p?.riichi) return null;
+    if (!p?.riichi && !this.isHandLocked(seat)) return null;
     if (!this.needsDiscard(seat)) return null;
     if (this.riichiMustActManually(seat)) return null;
     if (!this.lastDrawn) return null;
@@ -1830,7 +1867,8 @@ export class MahjongRoom {
       declarationRon && this.isLimitlessAsura() && !returnDeclarationStick;
     const previousWinners = this.isLimitlessAsura() ? [...this.winners] : [];
     const firstWinner = winnerSeats[0];
-    this.winners = [...previousWinners, ...winnerSeats];
+    // Fury Waves winners can win again; keep each seat once.
+    this.winners = [...new Set([...previousWinners, ...winnerSeats])];
     this.winner = this.winners[0];
     const priorModes = this.winResults.map((result) => result.mode).filter(Boolean);
     this.winMode = [...new Set([...priorModes, mode])].length > 1 ? 'multi' : mode;
@@ -1969,6 +2007,10 @@ export class MahjongRoom {
         type: 'riichi-pot',
       });
     }
+    if (potSeat != null && pot > 0) {
+      const potResult = scoredResults.find((r) => r.seat === potSeat);
+      if (potResult) potResult.potBonus = pot;
+    }
     this.lastRiichiPotClaim = potSeat != null && pot > 0 ? { seat: potSeat, amount: pot } : null;
     if (this.lastRiichiPotClaim) this.riichiPotClaims.push({ ...this.lastRiichiPotClaim });
 
@@ -1979,17 +2021,34 @@ export class MahjongRoom {
       this.players[i].points += merged.deltas[i];
     }
 
+    const fury = this.isFuryWaves();
     for (const seat of winnerSeats) {
       const player = this.players[seat];
-      player.active = false;
       player.won = true;
-      player.winningTile = mode === 'tsumo' ? this.winTile : null;
+      if (fury) {
+        // Winner stays in with a locked hand; a tsumo tile is set aside.
+        player.winningTile = null;
+        const tileWon = mode === 'tsumo' ? this.winTile : winTile ?? this.winTile;
+        if (tileWon) {
+          player.winLog.push({ tile: cloneTile(tileWon), mode, fromSeat: mode === 'ron' ? fromSeat : null });
+        }
+        if (mode === 'tsumo' && this.winTile) {
+          player.hand = player.hand.filter((t) => t.id !== this.winTile.id);
+          player.wonTiles.push(this.winTile);
+        }
+      } else {
+        player.active = false;
+        player.winningTile = mode === 'tsumo' ? this.winTile : null;
+      }
     }
     this.winResults = this.isLimitlessAsura()
       ? [...this.winResults, ...scoredResults]
       : scoredResults;
-    this.clearAllIppatsu();
-    this.invalidateDoubleRiichi();
+    // Fury Waves: wins neither break one-shot nor interrupt the first go-around.
+    if (!fury) {
+      this.clearAllIppatsu();
+      this.invalidateDoubleRiichi();
+    }
     this.openingDiscardPending = false;
 
     this.recordReplay('win', {
@@ -1997,9 +2056,32 @@ export class MahjongRoom {
       seats: winnerSeats,
       fromSeat: mode === 'ron' ? fromSeat : null,
       winTile: cloneTile(this.winTile),
+      setAside: fury && mode === 'tsumo',
+      stayIn: fury,
     });
     // In Asura a bust ends the whole game at once — no further wins this hand.
     const anyoneBusted = this.players.some((p) => p.points < 0);
+    if (fury && !anyoneBusted) {
+      // Drawing order is unchanged: continue as if the discard passed (ron)
+      // or as if the tsumo winner had discarded.
+      const afterSeat = mode === 'ron' && fromSeat != null ? fromSeat : firstWinner;
+      this.mustDiscardAfterMeld = null;
+      this.kuikaeBan = null;
+      this.drewThisTurn = false;
+      this.lastDrawn = null;
+      this.lastDrawWasRinshan = false;
+      const names = winnerSeats.map((seat) => this.players[seat].name).join(', ');
+      this.currentTurn = this.nextActiveSeat(afterSeat);
+      this.message = `${names} won by ${mode} — play continues.`;
+      const drawResult = this.autoDrawForCurrentTurn();
+      if (drawResult?.roundEnded) {
+        return { closed: true, win: true, seats: winnerSeats, seat: firstWinner };
+      }
+      if (!drawResult?.autoDiscarded) {
+        this.message = `${names} won by ${mode} — play continues.`;
+      }
+      return { closed: true, win: true, ongoing: true, seats: winnerSeats, seat: firstWinner };
+    }
     if (
       this.isLimitlessAsura() &&
       !anyoneBusted &&
@@ -2714,6 +2796,11 @@ export class MahjongRoom {
 
     const p = this.players[seat];
     const hand = p.hand;
+    if (this.isHandLocked(seat) && !p.riichi) {
+      if (this.lastDrawn && tileId !== this.lastDrawn) {
+        return { ok: false, error: 'Hand locked after winning — discard the drawn tile only.' };
+      }
+    }
     if (p.riichi) {
       if (p.riichiFirstDiscard) {
         if (!isTenpaiDiscard(hand, p.melds, tileId, p.wildcard)) {
@@ -2826,7 +2913,9 @@ export class MahjongRoom {
       const needed = this.rinshanNeededForClaim(c.type, p.hand, p.melds, tile);
       return this.canAffordRinshan(needed);
     });
-    if (p.riichi || !p.openCalls) claims = claims.filter((c) => c.type === 'win');
+    if (p.riichi || !p.openCalls || this.isHandLocked(seat)) {
+      claims = claims.filter((c) => c.type === 'win');
+    }
 
     // Drop options beaten by a higher-priority claim already submitted.
     const floor = this.highestSubmittedClaimPriority();
@@ -2845,6 +2934,7 @@ export class MahjongRoom {
   canRiichi(seat) {
     if (this.phase !== 'playing' || seat !== this.currentTurn || !this.players[seat]?.active) return false;
     if (this.claimWindow) return false;
+    if (this.isHandLocked(seat)) return false;
     const p = this.players[seat];
     if ((p.points ?? 0) < RIICHI_BET) return false;
     const mustDiscard =
@@ -3195,6 +3285,9 @@ export class MahjongRoom {
         active: p.active,
         won: p.won,
         winningTile: p.winningTile,
+        wonTiles: p.wonTiles ?? [],
+        winLog: p.winLog ?? [],
+        handLocked: this.isHandLocked(i),
         melds: p.melds.map((m, mi) => ({ ...m, ownerSeat: i, meldIndex: mi })),
         discards: p.discards.map((d) => ({
           // Keep each client's public discard state detached from the room.

@@ -100,6 +100,8 @@ export function initialHandState(handRecord, replay) {
       active: true,
       won: false,
       winningTile: null,
+      wonTiles: [],
+      winLog: [],
     });
   }
   return {
@@ -140,6 +142,8 @@ function cloneState(state) {
       active: p.active,
       won: p.won,
       winningTile: p.winningTile ? cloneTile(p.winningTile) : null,
+      wonTiles: cloneTiles(p.wonTiles ?? []),
+      winLog: (p.winLog ?? []).map((w) => ({ ...w, tile: cloneTile(w.tile) })),
     })),
     lastEvent: state.lastEvent,
     caption: state.caption,
@@ -298,9 +302,24 @@ export function applyReplayEvent(state, event, replay) {
     for (const winnerSeat of event.seats ?? []) {
       const winner = next.players[winnerSeat];
       if (!winner) continue;
-      winner.active = false;
       winner.won = true;
-      winner.winningTile = event.mode === 'tsumo' ? cloneTile(event.winTile) : null;
+      if (event.stayIn) {
+        // Fury Waves: winner keeps playing; a tsumo tile is set aside.
+        winner.winningTile = null;
+        if (event.winTile) {
+          winner.winLog = [
+            ...(winner.winLog ?? []),
+            { tile: cloneTile(event.winTile), mode: event.mode },
+          ];
+        }
+        if (event.setAside && event.winTile) {
+          winner.hand = winner.hand.filter((t) => t.id !== event.winTile.id);
+          winner.wonTiles = [...(winner.wonTiles ?? []), cloneTile(event.winTile)];
+        }
+      } else {
+        winner.active = false;
+        winner.winningTile = event.mode === 'tsumo' ? cloneTile(event.winTile) : null;
+      }
     }
     if (event.mode === 'ron' && event.fromSeat != null) {
       const discarder = next.players[event.fromSeat];

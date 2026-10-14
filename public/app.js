@@ -1,5 +1,5 @@
 import { getMeldTileViews } from './melds.js';
-import { openReplayViewer, openReplayFile } from './replay-view.js?v=3';
+import { openReplayViewer, openReplayFile } from './replay-view.js?v=5';
 
 const socket = io();
 
@@ -589,12 +589,13 @@ function setRiichiStick(riverCluster, showStick) {
   riverCluster.classList.toggle('has-riichi-stick', show);
 }
 
-function fillDiscardRow(container, entries, tileOpts = {}) {
+function fillDiscardRow(container, entries, tileOpts = {}, winLog = []) {
   if (!container) return;
   container.innerHTML = '';
   container.classList.add('discard-row');
   const list = entries || [];
   const fixedCap = DISCARD_FIXED_ROWS * DISCARD_ROW_COLS;
+  const wins = winLog || [];
 
   const main = document.createElement('div');
   main.className = 'discard-main';
@@ -623,6 +624,24 @@ function fillDiscardRow(container, entries, tileOpts = {}) {
   } else {
     container.classList.remove('has-overflow-row');
   }
+
+  // Fury Waves: winning tiles take the 4th river row, even before rows 2–3 fill.
+  container.classList.toggle('has-win-row', wins.length > 0);
+  if (!wins.length) return;
+  if (list.length <= fixedCap) {
+    const filler = document.createElement('div');
+    filler.className = 'discard-row-spacer';
+    container.appendChild(filler);
+  }
+  const winRow = document.createElement('div');
+  winRow.className = 'discard-wins';
+  for (const w of wins) {
+    const el = createTileEl(w.tile, { small: true, winTile: true });
+    el.classList.add(`won-${w.mode}`);
+    el.title = w.mode === 'tsumo' ? 'Won by tsumo' : 'Won by ron';
+    winRow.appendChild(el);
+  }
+  container.appendChild(winRow);
 }
 
 function seatHeaderHtml(p, s) {
@@ -640,6 +659,13 @@ function seatHeaderHtml(p, s) {
     s.phase !== 'lobby' && p.points != null
       ? `<span class="points">${Number(p.points).toLocaleString()}</span>`
       : '';
+  // Latest win only — in Fury Waves a new win replaces the previous gain.
+  const lastWin = p.won
+    ? (s.winResults ?? []).filter((r) => r.seat === p.seat).at(-1)
+    : null;
+  const gain = lastWin ? (lastWin.pointDelta ?? 0) + (lastWin.potBonus ?? 0) : 0;
+  const winGain =
+    gain > 0 ? `<span class="win-gain">+${gain.toLocaleString()}</span>` : '';
   const roundResult = s.roundSummary?.players?.find((r) => r.seat === p.seat);
   const statusBadge = roundEndStatusBadgeHtml(roundResult, s.roundSummary);
   const dealerBadge =
@@ -654,7 +680,7 @@ function seatHeaderHtml(p, s) {
   return `
     <span class="wind">${windLabel(p.wind)}</span>
     <span class="name">${name}</span>${offlineBadge}${dealerBadge}${wonBadge}${riichiBadge}${furitenBadge}${statusBadge}
-    ${points}
+    ${points}${winGain}
   `;
 }
 
@@ -875,6 +901,8 @@ function seatWinDisplay(s, seat, win = roundWinInfo(s)) {
       ? s.roundSummary?.players?.find((r) => r.seat === seat)
       : null;
   if (pr?.won && pr.winMode) {
+    // Fury Waves winning tiles are drawn via appendWinLog / the 4th river row.
+    if (pr.winLog?.length) return { tile: null, mode: null };
     return { tile: pr.winTile ?? null, mode: pr.winMode };
   }
   const p = s.players?.find((x) => x.seat === seat);
@@ -906,6 +934,24 @@ function populateWinningHand(container, hand, winTile, { small = true, winMode =
     winSlot.appendChild(createTileEl(winTile, { small, winTile: true }));
     container.appendChild(winSlot);
   }
+}
+
+/** Fury Waves round-end card: every winning tile (ron and tsumo), in order. */
+function appendWinLog(container, winLog, small = true) {
+  if (!winLog?.length) return;
+  const slot = document.createElement('div');
+  slot.className = 'win-tile-slot';
+  const label = document.createElement('span');
+  label.className = 'win-tile-label';
+  label.textContent = winLog.length > 1 ? `wins ×${winLog.length}` : winLog[0].mode;
+  slot.appendChild(label);
+  for (const w of winLog) {
+    const el = createTileEl(w.tile, { small, winTile: true });
+    el.classList.add(`won-${w.mode}`);
+    el.title = w.mode === 'tsumo' ? 'Won by tsumo' : 'Won by ron';
+    slot.appendChild(el);
+  }
+  container.appendChild(slot);
 }
 
 function relativeSeat(mySeat, seat) {
@@ -1389,6 +1435,7 @@ function renderRoundEndPanel(s) {
         winMode: seatWin.mode,
       });
       if (pr.wildcard) handRow.prepend(createTileEl(pr.wildcard, { small: true }));
+      appendWinLog(handRow, pr.winLog);
     }
     tilesRow.appendChild(handRow);
     body.appendChild(tilesRow);
@@ -1455,6 +1502,9 @@ function renderTable(s) {
   }
 
   document.getElementById('game')?.classList.toggle('phase-lobby', s.phase === 'lobby');
+  document
+    .getElementById('game')
+    ?.classList.toggle('mode-fury-waves', s.gameMode === 'fury-waves' && s.phase !== 'lobby');
 
   for (const p of s.players) {
     if (p.seat === mySeat) continue;
@@ -1532,9 +1582,14 @@ function renderTable(s) {
 
     const discRow = seat.querySelector('.discard-row');
     if (discRow && s.phase !== 'lobby') {
-      fillDiscardRow(discRow, p.discards, (entry, i, list) => ({
-        highlight: isClaimTargetDiscard(cw, p.seat, entry, i, list, canClaim),
-      }));
+      fillDiscardRow(
+        discRow,
+        p.discards,
+        (entry, i, list) => ({
+          highlight: isClaimTargetDiscard(cw, p.seat, entry, i, list, canClaim),
+        }),
+        p.winLog
+      );
     }
 
     if (bottomSeat) tableEl.insertBefore(seat, bottomSeat);
@@ -1807,7 +1862,7 @@ function renderYourArea(s) {
       yourMelds.appendChild(renderMeldGroup(m, s.mySeat, s.mySeat));
     }
     if (s.roundSummary?.endType !== 'abortive') {
-      fillDiscardRow(yourDiscards, me.discards || []);
+      fillDiscardRow(yourDiscards, me.discards || [], {}, me.winLog);
     }
     const revealMine = shouldRevealHandAtRoundEnd(s, s.mySeat);
     if (revealMine) {
@@ -1867,11 +1922,12 @@ function renderYourArea(s) {
   const tenpaiDiscards = s.tenpaiDiscards || [];
   const kuikaeForbidden = new Set(s.kuikaeForbiddenKeys || []);
   const riichiFirstDiscard = !!me.riichi && mustDiscard && tenpaiDiscards.length > 0;
-  const riichiDiscardOnly = !!me.riichi && mustDiscard && !riichiFirstDiscard;
+  const handLocked = !!me.riichi || !!me.handLocked;
+  const riichiDiscardOnly = handLocked && mustDiscard && !riichiFirstDiscard;
 
   pendingDiscard =
     mustDiscard &&
-    (!me.riichi || riichiFirstDiscard || !!s.lastDrawn);
+    (!handLocked || riichiFirstDiscard || !!s.lastDrawn);
 
   const drawnId = s.lastDrawn;
   const handRest = [];
@@ -1910,9 +1966,14 @@ function renderYourArea(s) {
 
   const cw = s.claimWindow;
   const canClaim = viewerCanClaim(s);
-  fillDiscardRow(yourDiscards, me.discards, (entry, i, list) => ({
-    highlight: isClaimTargetDiscard(cw, s.mySeat, entry, i, list, canClaim),
-  }));
+  fillDiscardRow(
+    yourDiscards,
+    me.discards,
+    (entry, i, list) => ({
+      highlight: isClaimTargetDiscard(cw, s.mySeat, entry, i, list, canClaim),
+    }),
+    me.winLog
+  );
 
   syncHostStartControls(s);
   btnNextRound.hidden = true;
@@ -1937,9 +1998,9 @@ function renderYourArea(s) {
     btnAbortNine.hidden = !canAbortNine;
     btnAbortNine.disabled = !canAbortNine;
   }
-  yourArea?.classList.toggle('riichi-locked', !!me.riichi);
+  yourArea?.classList.toggle('riichi-locked', handLocked);
   yourArea?.classList.toggle('furiten', !!s.furiten?.furiten);
-  youZone?.classList.toggle('riichi-locked', !!me.riichi);
+  youZone?.classList.toggle('riichi-locked', handLocked);
   youZone?.classList.toggle('furiten', !!s.furiten?.furiten);
 
   renderClaimPanel(s);

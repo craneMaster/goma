@@ -1826,15 +1826,16 @@ body.replay-open {
   overflow: visible;
 }
 
+/* Melds share the hand's row (to its right) so they never reach into the river */
 .seat-edge-cluster {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.2rem;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.6rem;
   width: max-content;
   max-width: none;
-  /* Pin to outer edge — melds grow toward center without moving the hand */
+  /* Pin to outer edge */
   position: absolute;
   left: 50%;
   bottom: 0;
@@ -1843,6 +1844,15 @@ body.replay-open {
   z-index: 2;
   margin: 0;
   flex: unset;
+}
+
+.seat-edge-cluster .melds-row {
+  order: 2;
+  align-items: flex-end;
+}
+
+.seat-edge-cluster .melds-row:empty {
+  display: none;
 }
 
 .seat {
@@ -1968,7 +1978,7 @@ body.replay-open {
   max-width: none;
 }
 
-/* Melds sit above the pinned hand; empty row stays zero-height */
+/* Melds sit beside the pinned hand; an empty meld row takes no space */
 .seat .melds-row,
 .seat-bottom .melds-row {
   flex: 0 0 auto;
@@ -2042,11 +2052,13 @@ body.replay-open {
 }
 
 /* Compact center stats — leave room for inward discard rivers */
+/* Centered on the ring of rivers (seat anchors average ~57% down), not the
+   pentagon's bounding box. */
 .seat-center,
 .table-center {
   position: absolute;
   left: 50%;
-  top: 50%;
+  top: 57%;
   transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
@@ -2171,10 +2183,10 @@ body.replay-open {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 0.15rem 0.35rem;
-  margin: 0 0 0.15rem;
-  padding: 0.12rem 0.35rem;
-  font-size: 0.68rem;
+  gap: 0.2rem 0.5rem;
+  margin: 0 0 0.2rem;
+  padding: 0.3rem 0.65rem;
+  font-size: 1.15rem;
   line-height: 1.2;
   transform: none;
   transform-origin: center center;
@@ -2195,7 +2207,7 @@ body.replay-open {
 }
 
 .seat-header .name {
-  max-width: 5.5rem;
+  max-width: 7.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2211,6 +2223,23 @@ body.replay-open {
 .seat-header .points {
   flex-shrink: 0;
   margin-left: 0;
+  font-size: 0.95em;
+}
+
+.seat-header .win-gain {
+  flex-shrink: 0;
+  font-size: 0.95em;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #7ee0a8;
+}
+
+.seat-header .riichi-badge,
+.seat-header .furiten-badge,
+.seat-header .dealer-badge,
+.seat-header .ready-badge,
+.seat-header .won-badge {
+  font-size: 0.8em;
 }
 
 .seat-header .count {
@@ -2225,8 +2254,8 @@ body.replay-open {
 }
 
 .phase-lobby .seat .seat-header {
-  font-size: 0.9rem;
-  padding: 0.4rem 0.65rem;
+  font-size: 1.25rem;
+  padding: 0.45rem 0.8rem;
 }
 
 .phase-lobby .seat:not(.empty) .seat-header {
@@ -2308,6 +2337,75 @@ body.replay-open {
   align-items: flex-end;
   width: max-content;
   max-width: none;
+}
+
+/* Fury Waves: winning tiles take a 4th river row */
+#game.mode-fury-waves {
+  --discard-rows-reserved: 4;
+}
+
+#game.mode-fury-waves .seat .discard-row {
+  min-height: calc(4 * var(--tile-seat-h) + 3 * var(--discard-gap) + 17px);
+  height: calc(4 * var(--tile-seat-h) + 3 * var(--discard-gap) + 17px);
+}
+
+.discard-row.has-win-row .discard-main {
+  min-height: calc(2 * var(--tile-sm-h) + var(--discard-gap));
+}
+
+.discard-row-spacer {
+  height: var(--tile-sm-h);
+}
+
+.seat .discard-row.has-win-row .discard-main {
+  min-height: calc(2 * var(--tile-seat-h) + var(--discard-gap));
+}
+
+.seat .discard-row-spacer {
+  height: var(--tile-seat-h);
+}
+
+.discard-wins,
+.replay-wins {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: calc(var(--discard-gap) + 3px);
+  justify-content: center;
+  width: max-content;
+  max-width: none;
+  margin-top: 4px;
+  padding: 5px 6px 4px;
+  border: 2px solid rgba(232, 168, 56, 0.85);
+  border-radius: 6px;
+  background: rgba(20, 10, 4, 0.45);
+}
+
+.discard-wins::before,
+.replay-wins::before {
+  content: 'Wins';
+  position: absolute;
+  top: -0.55rem;
+  left: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #2a1a0c;
+  color: #f3c46b;
+  font-family: 'Source Sans 3', 'Noto Sans SC', sans-serif;
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.replay-wins {
+  margin-top: 0.7rem;
+}
+
+.tile.win-tile.won-ron {
+  box-shadow: 0 0 0 2px #e8a838, 0 0 10px rgba(232, 168, 56, 0.5);
 }
 
 .seat .discard-main {
@@ -2913,7 +3011,7 @@ body.replay-open {
   .table-center {
     width: min(22%, 100px);
     max-width: 100px;
-    top: 50%;
+    top: 57%;
     font-size: 0.6rem;
     padding: 0.28rem 0.32rem;
   }

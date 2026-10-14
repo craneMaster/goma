@@ -1,0 +1,1 @@
+{"name":"tmpui","private":true,"type":"module","dependencies":{"playwright-core":"^1.49.0","socket.io-client":"^4.8.4"}}

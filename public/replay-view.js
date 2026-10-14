@@ -1,5 +1,5 @@
 import { getMeldTileViews } from './melds.js';
-import { buildHandFrames, eventLabel, parseReplayDocument } from './replay-engine.js';
+import { buildHandFrames, eventLabel, parseReplayDocument } from './replay-engine.js?v=3';
 
 const TILE_BACK_SRC = '/tiles/Tile-unknown.png';
 
@@ -324,16 +324,20 @@ export function openReplayViewer(replay, opts = {}) {
           createTileEl(t, { highlight: !!(hi && t.id === hi) })
         );
       }
-      if (tsumoTile) {
+      // Fury Waves winning tiles sit under the river instead.
+      const tsumoTiles = tsumoTile ? [tsumoTile] : [];
+      if (tsumoTiles.length) {
         const winSlot = document.createElement('div');
         winSlot.className = 'win-tile-slot';
         const label = document.createElement('span');
         label.className = 'win-tile-label';
         label.textContent = 'tsumo';
         winSlot.appendChild(label);
-        const winEl = createTileEl(tsumoTile, { highlight: !!(hi && tsumoTile.id === hi) });
-        winEl.classList.add('win-tile');
-        winSlot.appendChild(winEl);
+        for (const t of tsumoTiles) {
+          const winEl = createTileEl(t, { highlight: !!(hi && t.id === hi) });
+          winEl.classList.add('win-tile');
+          winSlot.appendChild(winEl);
+        }
         handRow.appendChild(winSlot);
       }
       if (p.wildcard) handRow.prepend(createTileEl(p.wildcard));
@@ -350,6 +354,17 @@ export function openReplayViewer(replay, opts = {}) {
         river.className = 'replay-river tile-row';
         appendDiscards(river, p.discards);
         card.appendChild(river);
+      }
+      if (p.winLog?.length) {
+        const wins = document.createElement('div');
+        wins.className = 'replay-river replay-wins tile-row';
+        for (const w of p.winLog) {
+          const winEl = createTileEl(w.tile, { highlight: !!(hi && w.tile.id === hi) });
+          winEl.classList.add('win-tile', `won-${w.mode}`);
+          winEl.title = w.mode;
+          wins.appendChild(winEl);
+        }
+        card.appendChild(wins);
       }
 
       seatsEl.appendChild(card);

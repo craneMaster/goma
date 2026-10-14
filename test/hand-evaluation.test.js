@@ -362,6 +362,116 @@ test('Asura records the winning tile for every tsumo, not just the first', () =>
   assert.equal(room.winResults.find((r) => r.seat === 3)?.winTile?.id, second.id);
 });
 
+function furyRoom(code) {
+  const room = new MahjongRoom(code);
+  room.gameMode = 'fury-waves';
+  room.phase = 'playing';
+  room.liveWall = [tile('pin', 9), tile('pin', 9, 1), tile('pin', 9, 2), tile('pin', 9, 3)];
+  room.players.forEach((player) => {
+    player.active = true;
+    player.points = 1_000_000;
+    player.melds = [];
+    player.hand = [];
+  });
+  return room;
+}
+
+test('Fury Waves starts every player at a million points', () => {
+  const room = new MahjongRoom('fury-start');
+  for (let i = 0; i < 5; i++) room.join(`f${i}`, `P${i}`);
+  assert.equal(room.start('f0', { gameMode: 'fury-waves' }).ok, true);
+  assert.equal(room.phase, 'tile-swap');
+  assert.ok(room.players.every((p) => p.points === 1_000_000));
+  assert.deepEqual(room.players.map((p) => p.hand.length), [13, 12, 12, 12, 12]);
+});
+
+test('Fury Waves ron keeps the winner in, keeps draw order and one-shot', () => {
+  const room = furyRoom('fury-ron');
+  room.currentTurn = 0;
+  room.players[2].hand = [...twoSidedPhysicalHand];
+  room.players[4].riichi = true;
+  room.players[4].ippatsu = true;
+
+  room.finishWins([{ seat: 2, patterns: ['standard'] }], 'ron', 0, tile('man', 6));
+
+  assert.equal(room.phase, 'playing');
+  assert.equal(room.players[2].active, true);
+  assert.equal(room.players[2].won, true);
+  assert.equal(room.isHandLocked(2), true);
+  assert.equal(room.currentTurn, 1); // after the discarder, not after the winner
+  assert.equal(room.players[1].hand.length, 1);
+  assert.equal(room.players[4].ippatsu, true);
+});
+
+test('Fury Waves tsumo sets the winning tile aside and passes the turn on', () => {
+  const room = furyRoom('fury-tsumo');
+  const drawn = tile('man', 3, 1);
+  room.currentTurn = 3;
+  room.players[3].hand = [...twoSidedPhysicalHand, drawn];
+  room.lastDrawn = drawn.id;
+  room.drewThisTurn = true;
+
+  room.finishWins([{ seat: 3, patterns: ['standard'] }], 'tsumo');
+
+  assert.equal(room.players[3].hand.length, 13);
+  assert.deepEqual(room.players[3].wonTiles.map((t) => t.id), [drawn.id]);
+  assert.equal(room.currentTurn, 4);
+  assert.equal(room.phase, 'playing');
+});
+
+test('Fury Waves logs every winning tile, ron and tsumo, for the river row', () => {
+  const room = furyRoom('fury-log');
+  const ronTile = tile('man', 6);
+  room.currentTurn = 0;
+  room.players[2].hand = [...twoSidedPhysicalHand];
+  room.finishWins([{ seat: 2, patterns: ['standard'] }], 'ron', 0, ronTile);
+
+  const drawn = tile('man', 3, 1);
+  room.currentTurn = 2;
+  room.players[2].hand = [...twoSidedPhysicalHand, drawn];
+  room.lastDrawn = drawn.id;
+  room.drewThisTurn = true;
+  room.finishWins([{ seat: 2, patterns: ['standard'] }], 'tsumo');
+
+  const log = room.snapshotFor('nobody').players[2].winLog;
+  assert.deepEqual(
+    log.map((w) => [w.mode, w.tile.id]),
+    [['ron', ronTile.id], ['tsumo', drawn.id]]
+  );
+});
+
+test('Fury Waves win gain refreshes per win and includes the collected pot', () => {
+  const room = furyRoom('fury-gain');
+  room.currentTurn = 0;
+  room.riichiPot = 1000;
+  room.players[2].hand = [...twoSidedPhysicalHand];
+  room.finishWins([{ seat: 2, patterns: ['standard'] }], 'ron', 0, tile('man', 6));
+  const first = room.winResults.filter((r) => r.seat === 2).at(-1);
+  assert.equal(first.potBonus, 1000);
+
+  room.currentTurn = 3;
+  room.finishWins([{ seat: 2, patterns: ['standard'] }], 'ron', 3, tile('man', 3, 2));
+  const results = room.winResults.filter((r) => r.seat === 2);
+  assert.equal(results.length, 2);
+  assert.equal(results.at(-1).potBonus, undefined);
+  assert.ok(results.at(-1).pointDelta > 0);
+});
+
+test('Fury Waves locked winner auto-discards a useless draw', () => {
+  const room = furyRoom('fury-locked');
+  room.players[2].hand = [...twoSidedPhysicalHand];
+  room.players[2].won = true;
+  room.currentTurn = 2;
+
+  const result = room.autoDrawForSeat(2);
+
+  assert.equal(result?.autoDiscarded, true);
+  assert.equal(room.players[2].hand.length, 13);
+  const last = room.players[2].discards.at(-1);
+  assert.equal((last.tile ?? last).suit, 'pin');
+  assert.equal(room.canRiichi(2), false);
+});
+
 test('Asura ron on a riichi declaration tile leaves the stick for the next winner', () => {
   const room = new MahjongRoom('riichi-ron-test');
   room.gameMode = 'limitless-asura';
